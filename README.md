@@ -1,8 +1,21 @@
 # Obsidian reMarkable Bridge
 
-An Obsidian plugin for sending notes to a reMarkable Paper Pro, editing them there as typed text with the Type Folio keyboard, and pulling the edited text back into the vault.
+An Obsidian plugin for sending notes to a reMarkable Paper Pro, editing them there as typed text with the Type Folio keyboard, and pulling the edited text back into the vault. PDFs travel too: send them for reading, pull them back with your ink baked in and text highlights extracted.
 
-This is an unofficial project. It is not affiliated with or endorsed by reMarkable AS. It requires no Connect subscription.
+This is an unofficial project. It is not affiliated with or endorsed by reMarkable AS. It requires no Connect subscription and never talks to reMarkable's cloud: the official desktop app does all the syncing.
+
+## Status
+
+Beta. Developed and tested on macOS with a reMarkable Paper Pro and the official reMarkable desktop app (free tier). The Windows and Linux store paths are untested guesses; set the store path manually in settings on those platforms and treat them as experimental. The plugin never deletes device data (archiving means the device trash) and refuses to write if the store layout looks unfamiliar, but this is beta software that touches your documents: keep backups of your vault.
+
+## Install
+
+Not yet in the community plugin directory. Manual install:
+
+1. Download `main.js`, `manifest.json`, and `styles.css` from the latest release (or build with `npm install && npm run build`).
+2. Copy them to `<your vault>/.obsidian/plugins/remarkable-bridge/`.
+3. Enable "reMarkable Bridge" in Settings → Community plugins.
+4. Make sure the reMarkable desktop app is installed, paired, and has synced at least once.
 
 ## How it works
 

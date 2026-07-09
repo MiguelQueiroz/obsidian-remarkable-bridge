@@ -9,7 +9,7 @@
     "test": "node esbuild.config.mjs test && node test/run-tests.mjs"
   },
   "author": "kebl3541",
-  "license": "MIT",
+  "license": "GPL-3.0-or-later",
   "devDependencies": {
     "@codemirror/state": "^6.4.1",
     "@types/node": "^26.1.1",
