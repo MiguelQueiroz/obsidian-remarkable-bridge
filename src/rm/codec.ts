@@ -349,7 +349,7 @@ function readTextItem(r: Reader): TextItem {
         if (r.checkTag(2, TagType.Byte4)) {
           r.tag(2, TagType.Byte4);
           const fmt = r.u32();
-          return fmt as string | number;
+          return fmt;
         }
         return text;
       });

@@ -97,7 +97,8 @@ export default class RemarkableBridge extends Plugin {
   }
 
   async onload() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const loaded = (await this.loadData()) as Partial<BridgeSettings> | null;
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded ?? {});
 
     this.addCommand({
       id: "send-to-remarkable",
@@ -385,7 +386,7 @@ export default class RemarkableBridge extends Plugin {
 
       this.settings.checkouts[docId] = { docId, path: file.path, stash, sentAt: Date.now(), sentHash: bodyHash(body) };
       await this.saveData(this.settings);
-      await this.app.fileManager.processFrontMatter(file, (fm) => {
+      await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
         fm[FM_ID] = docId;
       });
       this.startWatcher();
@@ -442,7 +443,7 @@ export default class RemarkableBridge extends Plugin {
       } else {
         await this.app.vault.process(file, () => fm + markdown);
       }
-      await this.app.fileManager.processFrontMatter(file, (front) => {
+      await this.app.fileManager.processFrontMatter(file, (front: Record<string, unknown>) => {
         delete front[FM_ID];
       });
 
@@ -481,7 +482,7 @@ export default class RemarkableBridge extends Plugin {
     delete this.settings.checkouts[checkout.docId];
     this.changedDocs.delete(checkout.docId);
     await this.saveData(this.settings);
-    await this.app.fileManager.processFrontMatter(file, (front) => {
+    await this.app.fileManager.processFrontMatter(file, (front: Record<string, unknown>) => {
       delete front[FM_ID];
     });
     this.refreshBannersSoon();
@@ -674,7 +675,7 @@ export default class RemarkableBridge extends Plugin {
       if (!(view instanceof MarkdownView)) continue;
       const file = view.file;
       const checkout = file ? this.checkoutForFile(file) : undefined;
-      const existing = view.containerEl.querySelector(".rm-bridge-banner") as HTMLElement | null;
+      const existing = view.containerEl.querySelector<HTMLElement>(".rm-bridge-banner");
 
       if (!checkout || !file) {
         existing?.remove();

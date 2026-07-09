@@ -68,7 +68,7 @@ export function defaultStorePath(): string {
 
 async function readJson(p: string): Promise<Record<string, unknown> | null> {
   try {
-    return JSON.parse(await fsp.readFile(p, "utf8"));
+    return JSON.parse(await fsp.readFile(p, "utf8")) as Record<string, unknown>;
   } catch {
     return null;
   }
@@ -448,7 +448,7 @@ export class RemarkableStore {
         if (!tracked().has(docId)) return;
         pending.add(docId);
         if (timer === null) {
-          timer = setTimeout(() => {
+          timer = window.setTimeout(() => {
             timer = null;
             for (const id of pending) onChange(id);
             pending.clear();
@@ -459,7 +459,7 @@ export class RemarkableStore {
       return () => {};
     }
     return () => {
-      if (timer) clearTimeout(timer);
+      if (timer) window.clearTimeout(timer);
       watcher?.close();
     };
   }

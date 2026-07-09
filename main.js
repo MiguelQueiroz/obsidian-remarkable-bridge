@@ -22493,7 +22493,7 @@ var RemarkableStore = class {
         if (!tracked().has(docId)) return;
         pending.add(docId);
         if (timer === null) {
-          timer = setTimeout(() => {
+          timer = window.setTimeout(() => {
             timer = null;
             for (const id2 of pending) onChange(id2);
             pending.clear();
@@ -22505,7 +22505,7 @@ var RemarkableStore = class {
       };
     }
     return () => {
-      if (timer) clearTimeout(timer);
+      if (timer) window.clearTimeout(timer);
       watcher?.close();
     };
   }
@@ -22752,7 +22752,8 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     return Object.values(this.settings.checkouts).find((c) => c.path === file.path);
   }
   async onload() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const loaded = await this.loadData();
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded ?? {});
     this.addCommand({
       id: "send-to-remarkable",
       name: "Send note to reMarkable",
