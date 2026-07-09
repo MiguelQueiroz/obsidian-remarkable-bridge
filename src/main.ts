@@ -58,8 +58,14 @@ export default class RemarkableBridge extends Plugin {
   private ribbonEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
 
+  private storeInstance: RemarkableStore | null = null;
+
   store(): RemarkableStore {
-    return new RemarkableStore(this.settings.storePath || defaultStorePath());
+    const root = this.settings.storePath || defaultStorePath();
+    if (!this.storeInstance || this.storeInstance.root !== root) {
+      this.storeInstance = new RemarkableStore(root);
+    }
+    return this.storeInstance;
   }
 
   checkoutForFile(file: TFile): Checkout | undefined {
@@ -164,7 +170,14 @@ export default class RemarkableBridge extends Plugin {
     this.addCommand({
       id: "import-from-remarkable",
       name: "Import a reMarkable note into the vault",
-      callback: () => new ImportModal(this.app, this).open(),
+      callback: async () => {
+        try {
+          const snap = await this.store().snapshot();
+          new ImportModal(this.app, this, snap).open();
+        } catch (e) {
+          new Notice(`Cannot read the reMarkable store: ${e instanceof Error ? e.message : e}`, 8000);
+        }
+      },
     });
 
     this.addCommand({
@@ -271,7 +284,7 @@ export default class RemarkableBridge extends Plugin {
   async sendNote(file: TFile) {
     try {
       const store = this.store();
-      const check = store.verify();
+      const check = await store.verify();
       if (!check.ok) {
         new Notice(`reMarkable bridge: ${check.reason}`, 10000);
         return;
@@ -279,8 +292,8 @@ export default class RemarkableBridge extends Plugin {
       const raw = await this.app.vault.read(file);
       const { body } = this.splitFrontmatter(raw);
       const { paragraphs, stash } = markdownToDevice(body, this.settings.appendCheatSheet);
-      const folderId = store.ensureFolder(this.settings.deviceFolder);
-      const docId = store.createTextDocument(file.basename, folderId, [paragraphs]);
+      const folderId = await store.ensureFolder(this.settings.deviceFolder);
+      const docId = await store.createTextDocument(file.basename, folderId, [paragraphs]);
 
       this.settings.checkouts[docId] = { docId, path: file.path, stash, sentAt: Date.now() };
       await this.saveData(this.settings);
@@ -305,11 +318,11 @@ export default class RemarkableBridge extends Plugin {
     }
     try {
       const store = this.store();
-      if (!store.docExists(checkout.docId)) {
+      if (!(await store.docExists(checkout.docId))) {
         new Notice("The reMarkable copy no longer exists. Use force release to unlock the note.", 10000);
         return;
       }
-      const { pages } = store.readTextDocument(checkout.docId);
+      const { pages } = await store.readTextDocument(checkout.docId);
       const paragraphs: ParsedParagraph[] = [];
       pages.forEach((p, i) => {
         if (i > 0) paragraphs.push({ style: 1, spans: [] });
@@ -333,7 +346,7 @@ export default class RemarkableBridge extends Plugin {
       if (hasInk && this.settings.trashAfterPull) {
         warnings.push("Device copy kept (not archived) because it contains handwriting.");
       }
-      if (this.settings.trashAfterPull && !hasInk) store.trashDocument(checkout.docId);
+      if (this.settings.trashAfterPull && !hasInk) await store.trashDocument(checkout.docId);
       delete this.settings.checkouts[checkout.docId];
       this.changedDocs.delete(checkout.docId);
       await this.saveData(this.settings);
@@ -352,9 +365,9 @@ export default class RemarkableBridge extends Plugin {
     if (!checkout) return;
     const store = this.store();
     // PDFs are only untracked; their device copy (with annotations) is kept.
-    if (checkout.kind !== "pdf" && store.docExists(checkout.docId)) {
+    if (checkout.kind !== "pdf" && (await store.docExists(checkout.docId))) {
       try {
-        store.trashDocument(checkout.docId);
+        await store.trashDocument(checkout.docId);
       } catch (e) {
         console.error(e);
       }
@@ -389,7 +402,7 @@ export default class RemarkableBridge extends Plugin {
   async sendPdf(file: TFile) {
     try {
       const store = this.store();
-      const check = store.verify();
+      const check = await store.verify();
       if (!check.ok) {
         new Notice(`reMarkable bridge: ${check.reason}`, 10000);
         return;
@@ -398,8 +411,8 @@ export default class RemarkableBridge extends Plugin {
       const { PDFDocument } = await import("pdf-lib");
       const pdf = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
       const pageCount = pdf.getPageCount();
-      const folderId = store.ensureFolder(this.settings.deviceFolder);
-      const docId = store.createPdfDocument(file.basename, folderId, bytes, pageCount);
+      const folderId = await store.ensureFolder(this.settings.deviceFolder);
+      const docId = await store.createPdfDocument(file.basename, folderId, bytes, pageCount);
       this.settings.checkouts[docId] = { docId, path: file.path, stash: [], sentAt: Date.now(), kind: "pdf" };
       await this.saveData(this.settings);
       this.startWatcher();
@@ -417,12 +430,12 @@ export default class RemarkableBridge extends Plugin {
     if (!checkout) return;
     try {
       const store = this.store();
-      if (!store.docExists(checkout.docId)) {
+      if (!(await store.docExists(checkout.docId))) {
         new Notice("The reMarkable copy no longer exists. Use 'Stop tracking' to unlink.", 10000);
         return;
       }
-      const perPage = store.readHighlights(checkout.docId);
-      const { ink, skippedPages } = store.readInk(checkout.docId);
+      const perPage = await store.readHighlights(checkout.docId);
+      const { ink, skippedPages } = await store.readInk(checkout.docId);
       if (!perPage.length && !ink.length) {
         new Notice("Nothing to pull yet: no ink or highlights found on the device copy.", 10000);
         return;
@@ -430,7 +443,7 @@ export default class RemarkableBridge extends Plugin {
       const made: string[] = [];
 
       if (ink.length) {
-        const base = store.readPdfBytes(checkout.docId);
+        const base = await store.readPdfBytes(checkout.docId);
         if (base) {
           const { bakeInkOntoPdf } = await import("./pdf-ink");
           const baked = await bakeInkOntoPdf(base, ink);
@@ -473,12 +486,12 @@ export default class RemarkableBridge extends Plugin {
   async importPdf(docId: string, name: string) {
     try {
       const store = this.store();
-      let bytes = store.readPdfBytes(docId);
+      let bytes = await store.readPdfBytes(docId);
       if (!bytes) {
         new Notice(`No PDF file found for "${name}".`, 8000);
         return;
       }
-      const { ink } = store.readInk(docId);
+      const { ink } = await store.readInk(docId);
       if (ink.length) {
         const { bakeInkOntoPdf } = await import("./pdf-ink");
         bytes = await bakeInkOntoPdf(bytes, ink);
@@ -492,7 +505,7 @@ export default class RemarkableBridge extends Plugin {
       }
       const pdfFile = await this.app.vault.createBinary(target, bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
 
-      const perPage = store.readHighlights(docId);
+      const perPage = await store.readHighlights(docId);
       if (perPage.length) {
         const lines: string[] = [`Highlights from [[${pdfFile.name}]], imported ${new Date().toLocaleString()}.`, ""];
         for (const { page, highlights } of perPage) {
@@ -517,7 +530,7 @@ export default class RemarkableBridge extends Plugin {
   async importDocument(docId: string, name: string) {
     try {
       const store = this.store();
-      const { pages } = store.readTextDocument(docId);
+      const { pages } = await store.readTextDocument(docId);
       const paragraphs: ParsedParagraph[] = [];
       pages.forEach((p, i) => {
         if (i > 0) paragraphs.push({ style: 1, spans: [] });
@@ -552,15 +565,25 @@ export default class RemarkableBridge extends Plugin {
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
       if (!(view instanceof MarkdownView)) continue;
-      view.containerEl.querySelector(".rm-bridge-banner")?.remove();
       const file = view.file;
-      if (!file) continue;
-      const checkout = this.checkoutForFile(file);
-      if (!checkout) continue;
+      const checkout = file ? this.checkoutForFile(file) : undefined;
+      const existing = view.containerEl.querySelector(".rm-bridge-banner") as HTMLElement | null;
+
+      if (!checkout || !file) {
+        existing?.remove();
+        continue;
+      }
+
+      // Idempotent: leave the DOM alone unless the banner state changed.
+      // Rebuilding on every layout-change can feed back into layout-change.
+      const hasChanges = this.changedDocs.has(checkout.docId);
+      const stateKey = `${checkout.docId}:${hasChanges}:${this.settings.lockWhileOut}`;
+      if (existing?.dataset.rmState === stateKey) continue;
+      existing?.remove();
 
       const banner = createDiv({ cls: "rm-bridge-banner" });
+      banner.dataset.rmState = stateKey;
       const sent = new Date(checkout.sentAt);
-      const hasChanges = this.changedDocs.has(checkout.docId);
       banner.createSpan({
         text: hasChanges
           ? "Edited on your reMarkable; changes are ready. "
@@ -582,6 +605,9 @@ export default class RemarkableBridge extends Plugin {
 /* ------------------------------------------------------------------ */
 
 class DashboardView extends ItemView {
+  private renderQueued = false;
+  private lastRender = 0;
+
   constructor(leaf: WorkspaceLeaf, private plugin: RemarkableBridge) {
     super(leaf);
   }
@@ -595,20 +621,32 @@ class DashboardView extends ItemView {
     return "tablet";
   }
   async onOpen() {
-    this.render();
+    void this.renderNow();
   }
 
+  /** Rate-limited render; the library listing is async and cached. */
   render() {
+    if (this.renderQueued) return;
+    const hidden = !(this.containerEl.isShown?.() ?? true);
+    const wait = Math.max(0, 3000 - (Date.now() - this.lastRender));
+    if (!hidden && wait === 0) {
+      void this.renderNow();
+      return;
+    }
+    this.renderQueued = true;
+    window.setTimeout(() => {
+      this.renderQueued = false;
+      if (this.containerEl.isShown?.() ?? true) void this.renderNow();
+    }, wait || 1000);
+  }
+
+  async renderNow() {
+    this.lastRender = Date.now();
     const el = this.contentEl;
     el.empty();
     el.addClass("rm-bridge-dashboard");
 
-    const store = this.plugin.store();
-    const check = store.verify();
-    const status = el.createDiv({ cls: "rm-bridge-dash-status" });
-    setIcon(status.createSpan(), check.ok ? "check-circle" : "alert-circle");
-    status.createSpan({ text: check.ok ? ` Desktop app store: ${check.documents} documents` : ` ${check.reason}` });
-
+    // Checkouts render immediately; the device library fills in when ready.
     el.createEl("h5", { text: "Checked out to the device" });
     const outs = Object.values(this.plugin.settings.checkouts);
     if (!outs.length) el.createDiv({ text: "Nothing checked out.", cls: "rm-bridge-dash-empty" });
@@ -628,27 +666,44 @@ class DashboardView extends ItemView {
       };
     }
 
-    if (check.ok) {
-      el.createEl("h5", { text: "On the device" });
-      const outIds = new Set(outs.map((c) => c.docId));
-      const docs = store.listDocuments().slice(0, 30);
-      for (const d of docs) {
-        if (outIds.has(d.id)) continue;
-        const row = el.createDiv({ cls: "rm-bridge-dash-row" });
-        const info = row.createDiv();
-        info.createDiv({ text: d.name, cls: "rm-bridge-dash-name" });
-        const folder = store.folderName(d.parent);
-        info.createDiv({
-          text: `${d.fileType === "pdf" ? "PDF · " : d.fileType === "epub" ? "EPUB · " : ""}${folder ? folder + " · " : ""}${new Date(d.lastModified).toLocaleDateString()}`,
-          cls: "rm-bridge-dash-sub",
-        });
-        if (d.fileType === "pdf") {
-          const imp = row.createEl("button", { text: "Import PDF" });
-          imp.onclick = () => void this.plugin.importPdf(d.id, d.name);
-        } else if (d.fileType === "notebook" || d.fileType === "") {
-          const imp = row.createEl("button", { text: "Import" });
-          imp.onclick = () => void this.plugin.importDocument(d.id, d.name);
-        }
+    const status = el.createDiv({ cls: "rm-bridge-dash-status" });
+    status.createSpan({ text: "Reading device library…" });
+    const listEl = el.createDiv();
+
+    const store = this.plugin.store();
+    let snap;
+    try {
+      snap = await store.snapshot();
+    } catch (e) {
+      status.empty();
+      setIcon(status.createSpan(), "alert-circle");
+      status.createSpan({ text: ` ${e instanceof Error ? e.message : e}` });
+      return;
+    }
+    if (this.lastRender !== Date.now() && !el.isConnected) return;
+
+    status.empty();
+    setIcon(status.createSpan(), "check-circle");
+    status.createSpan({ text: ` Desktop app store: ${snap.documents} documents` });
+
+    listEl.createEl("h5", { text: "On the device" });
+    const outIds = new Set(outs.map((c) => c.docId));
+    for (const d of snap.docs.slice(0, 30)) {
+      if (outIds.has(d.id)) continue;
+      const row = listEl.createDiv({ cls: "rm-bridge-dash-row" });
+      const info = row.createDiv();
+      info.createDiv({ text: d.name, cls: "rm-bridge-dash-name" });
+      const folder = snap.folders.get(d.parent) ?? "";
+      info.createDiv({
+        text: `${d.fileType === "pdf" ? "PDF · " : d.fileType === "epub" ? "EPUB · " : ""}${folder ? folder + " · " : ""}${new Date(d.lastModified).toLocaleDateString()}`,
+        cls: "rm-bridge-dash-sub",
+      });
+      if (d.fileType === "pdf") {
+        const imp = row.createEl("button", { text: "Import PDF" });
+        imp.onclick = () => void this.plugin.importPdf(d.id, d.name);
+      } else if (d.fileType === "notebook" || d.fileType === "") {
+        const imp = row.createEl("button", { text: "Import" });
+        imp.onclick = () => void this.plugin.importDocument(d.id, d.name);
       }
     }
   }
@@ -659,19 +714,15 @@ class DashboardView extends ItemView {
 /* ------------------------------------------------------------------ */
 
 class ImportModal extends FuzzySuggestModal<{ id: string; name: string; parent: string; fileType: string }> {
-  constructor(app: App, private plugin: RemarkableBridge) {
+  constructor(app: App, private plugin: RemarkableBridge, private snap: import("./store").StoreSnapshot) {
     super(app);
     this.setPlaceholder("Import a reMarkable document…");
   }
   getItems() {
-    try {
-      return this.plugin.store().listDocuments().filter((d) => d.fileType === "pdf" || d.fileType === "notebook" || d.fileType === "");
-    } catch {
-      return [];
-    }
+    return this.snap.docs.filter((d) => d.fileType === "pdf" || d.fileType === "notebook" || d.fileType === "");
   }
   getItemText(item: { name: string; parent: string; fileType: string }) {
-    const folder = this.plugin.store().folderName(item.parent);
+    const folder = this.snap.folders.get(item.parent) ?? "";
     const prefix = item.fileType === "pdf" ? "[PDF] " : "";
     return prefix + (folder ? `${folder}/${item.name}` : item.name);
   }
@@ -695,14 +746,9 @@ class BridgeSettingTab extends PluginSettingTab {
     containerEl.empty();
 
     const store = this.plugin.store();
-    const check = store.verify();
-    new Setting(containerEl)
+    const storeSetting = new Setting(containerEl)
       .setName("Desktop app store")
-      .setDesc(
-        check.ok
-          ? `Connected: ${check.documents} documents at ${store.root}`
-          : `Not connected: ${check.reason}`
-      )
+      .setDesc("Checking…")
       .addText((text) =>
         text
           .setPlaceholder(defaultStorePath())
@@ -712,6 +758,11 @@ class BridgeSettingTab extends PluginSettingTab {
             await this.plugin.saveData(this.plugin.settings);
           })
       );
+    void store.verify().then((check) => {
+      storeSetting.setDesc(
+        check.ok ? `Connected: ${check.documents} documents at ${store.root}` : `Not connected: ${check.reason}`
+      );
+    });
 
     new Setting(containerEl)
       .setName("Device folder")

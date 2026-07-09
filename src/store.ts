@@ -5,6 +5,10 @@
  * layout: per-document UUID folders of .rm pages plus sidecar JSON files).
  * We create fresh documents and read existing ones; we never rewrite a page
  * file in place and never delete anything. The official app syncs.
+ *
+ * All I/O is asynchronous: while the app is syncing, reads on this directory
+ * can take tens of milliseconds each, and blocking the UI thread with
+ * hundreds of them freezes Obsidian. Library listings are cached briefly.
  */
 
 import * as fs from "fs";
@@ -23,12 +27,28 @@ import {
 } from "./rm/codec";
 import { PageInk } from "./pdf-ink";
 
+const fsp = fs.promises;
+
 export interface DocMetadata {
   visibleName: string;
   parent: string;
   type: "DocumentType" | "CollectionType";
   lastModified: string;
   deleted?: boolean;
+}
+
+export interface DocInfo {
+  id: string;
+  name: string;
+  parent: string;
+  lastModified: number;
+  fileType: string;
+}
+
+export interface StoreSnapshot {
+  docs: DocInfo[];
+  folders: Map<string, string>;
+  documents: number;
 }
 
 export class StoreError extends Error {}
@@ -46,53 +66,120 @@ export function defaultStorePath(): string {
   return path.join(os.homedir(), ".local", "share", "remarkable", "desktop");
 }
 
+async function readJson(p: string): Promise<Record<string, unknown> | null> {
+  try {
+    return JSON.parse(await fsp.readFile(p, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 export class RemarkableStore {
+  private snapshotCache: { at: number; promise: Promise<StoreSnapshot> } | null = null;
+
   constructor(public readonly root: string) {}
 
   /** Sanity-check the layout before touching anything. */
-  verify(): { ok: boolean; documents: number; reason?: string } {
-    if (!fs.existsSync(this.root)) {
+  async verify(): Promise<{ ok: boolean; documents: number; reason?: string }> {
+    try {
+      await fsp.access(this.root);
+    } catch {
       return { ok: false, documents: 0, reason: `Store not found at ${this.root}. Is the reMarkable desktop app installed?` };
     }
-    const metas = fs.readdirSync(this.root).filter((f) => f.endsWith(".metadata"));
+    const metas = (await fsp.readdir(this.root)).filter((f) => f.endsWith(".metadata"));
     if (metas.length === 0) {
       return { ok: false, documents: 0, reason: "Store contains no documents; open the reMarkable desktop app once first." };
     }
-    try {
-      const sample = JSON.parse(fs.readFileSync(path.join(this.root, metas[0]), "utf8"));
-      if (typeof sample.visibleName !== "string" || typeof sample.type !== "string") {
-        return { ok: false, documents: metas.length, reason: "Store layout not recognized (app update?). Refusing to write." };
-      }
-    } catch (e) {
-      return { ok: false, documents: metas.length, reason: `Could not read store metadata: ${e}` };
+    const sample = await readJson(path.join(this.root, metas[0]));
+    if (!sample || typeof sample.visibleName !== "string" || typeof sample.type !== "string") {
+      return { ok: false, documents: metas.length, reason: "Store layout not recognized (app update?). Refusing to write." };
     }
     return { ok: true, documents: metas.length };
   }
 
-  readMetadata(docId: string): DocMetadata {
-    return JSON.parse(fs.readFileSync(path.join(this.root, `${docId}.metadata`), "utf8"));
+  private async readMetadata(docId: string): Promise<DocMetadata> {
+    const meta = await readJson(path.join(this.root, `${docId}.metadata`));
+    if (!meta) throw new StoreError(`Cannot read metadata for ${docId}`);
+    return meta as unknown as DocMetadata;
   }
 
-  private writeMetadata(docId: string, meta: DocMetadata & Record<string, unknown>) {
-    fs.writeFileSync(path.join(this.root, `${docId}.metadata`), JSON.stringify(meta, null, 4));
+  private async writeMetadata(docId: string, meta: DocMetadata & Record<string, unknown>) {
+    await fsp.writeFile(path.join(this.root, `${docId}.metadata`), JSON.stringify(meta, null, 4));
+  }
+
+  /**
+   * One pass over the library: all documents plus a folder-name map.
+   * Cached for 10 seconds; concurrent callers share one scan.
+   */
+  snapshot(): Promise<StoreSnapshot> {
+    if (this.snapshotCache && Date.now() - this.snapshotCache.at < 10_000) {
+      return this.snapshotCache.promise;
+    }
+    const promise = this.buildSnapshot();
+    this.snapshotCache = { at: Date.now(), promise };
+    promise.catch(() => (this.snapshotCache = null));
+    return promise;
+  }
+
+  invalidate() {
+    this.snapshotCache = null;
+  }
+
+  private async buildSnapshot(): Promise<StoreSnapshot> {
+    const entries = await fsp.readdir(this.root);
+    const metaFiles = entries.filter((f) => f.endsWith(".metadata"));
+    const docs: DocInfo[] = [];
+    const folders = new Map<string, string>();
+    const docIdsNeedingType: DocInfo[] = [];
+
+    const CHUNK = 32;
+    for (let i = 0; i < metaFiles.length; i += CHUNK) {
+      await Promise.all(
+        metaFiles.slice(i, i + CHUNK).map(async (f) => {
+          const meta = (await readJson(path.join(this.root, f))) as (DocMetadata & Record<string, unknown>) | null;
+          if (!meta) return;
+          const id = f.slice(0, -".metadata".length);
+          if (meta.type === "CollectionType" && !meta.deleted) {
+            folders.set(id, meta.visibleName);
+            return;
+          }
+          if (meta.type !== "DocumentType" || meta.deleted || meta.parent === "trash") return;
+          const info: DocInfo = {
+            id,
+            name: meta.visibleName,
+            parent: meta.parent ?? "",
+            lastModified: parseInt(meta.lastModified, 10) || 0,
+            fileType: "notebook",
+          };
+          docs.push(info);
+          docIdsNeedingType.push(info);
+        })
+      );
+    }
+
+    for (let i = 0; i < docIdsNeedingType.length; i += CHUNK) {
+      await Promise.all(
+        docIdsNeedingType.slice(i, i + CHUNK).map(async (info) => {
+          const content = await readJson(path.join(this.root, `${info.id}.content`));
+          if (content && typeof content.fileType === "string") info.fileType = content.fileType;
+        })
+      );
+    }
+
+    docs.sort((a, b) => b.lastModified - a.lastModified);
+    return { docs, folders, documents: metaFiles.length };
   }
 
   /** Find a folder by name at the root level, or create it. Returns its id. */
-  ensureFolder(name: string): string {
-    for (const f of fs.readdirSync(this.root)) {
-      if (!f.endsWith(".metadata")) continue;
-      try {
-        const meta = JSON.parse(fs.readFileSync(path.join(this.root, f), "utf8"));
-        if (meta.type === "CollectionType" && meta.visibleName === name && meta.parent === "" && !meta.deleted) {
-          return f.slice(0, -".metadata".length);
-        }
-      } catch {
-        continue;
-      }
+  async ensureFolder(name: string): Promise<string> {
+    const snap = await this.snapshot();
+    for (const [id, folderName] of snap.folders) {
+      const meta = await this.readMetadata(id).catch(() => null);
+      if (folderName === name && meta && meta.parent === "" && !meta.deleted) return id;
     }
     const id = randomUUID();
     const now = String(Date.now());
-    this.writeMetadata(id, {
+    await this.writeMetadata(id, {
       createdTime: now,
       deleted: false,
       lastModified: now,
@@ -109,28 +196,49 @@ export class RemarkableStore {
       version: 0,
       visibleName: name,
     });
-    fs.writeFileSync(path.join(this.root, `${id}.content`), JSON.stringify({ tags: [] }, null, 4));
+    await fsp.writeFile(path.join(this.root, `${id}.content`), JSON.stringify({ tags: [] }, null, 4));
+    this.invalidate();
     return id;
   }
 
+  private baseMetadata(name: string, parentId: string): DocMetadata & Record<string, unknown> {
+    const now = String(Date.now());
+    return {
+      createdTime: now,
+      deleted: false,
+      lastModified: now,
+      lastOpened: "0",
+      lastOpenedPage: 0,
+      metadatamodified: false,
+      modified: false,
+      new: false,
+      parent: parentId,
+      pinned: false,
+      source: "",
+      synced: false,
+      type: "DocumentType",
+      version: 0,
+      visibleName: name,
+    };
+  }
+
   /** Create a fresh typed-text document. Returns the new document id. */
-  createTextDocument(name: string, parentId: string, pages: OutParagraph[][]): string {
-    const check = this.verify();
+  async createTextDocument(name: string, parentId: string, pages: OutParagraph[][]): Promise<string> {
+    const check = await this.verify();
     if (!check.ok) throw new StoreError(check.reason);
 
     const docId = randomUUID();
     const authorUuid = randomUUID();
     const docDir = path.join(this.root, docId);
-    fs.mkdirSync(docDir);
+    await fsp.mkdir(docDir);
 
     const pageIds: string[] = [];
     for (const paragraphs of pages) {
       const pageId = randomUUID();
       pageIds.push(pageId);
-      fs.writeFileSync(path.join(docDir, `${pageId}.rm`), buildTextPage(paragraphs, authorUuid));
+      await fsp.writeFile(path.join(docDir, `${pageId}.rm`), buildTextPage(paragraphs, authorUuid));
     }
 
-    // Page index values sort lexicographically: "aa", "ab", ...
     const idx = (i: number) => `a${String.fromCharCode(97 + i)}`;
     const content = {
       cPages: {
@@ -156,71 +264,22 @@ export class RemarkableStore {
       textScale: 0,
       zoomMode: "bestFit",
     };
-    const now = String(Date.now());
-    fs.writeFileSync(path.join(this.root, `${docId}.content`), JSON.stringify(content, null, 4));
-    fs.writeFileSync(path.join(this.root, `${docId}.local`), JSON.stringify({ contentFormatVersion: 2 }, null, 4));
-    fs.writeFileSync(path.join(this.root, `${docId}.pagedata`), "Blank\n".repeat(pageIds.length));
-    this.writeMetadata(docId, {
-      createdTime: now,
-      deleted: false,
-      lastModified: now,
-      lastOpened: "0",
-      lastOpenedPage: 0,
-      metadatamodified: false,
-      modified: false,
-      new: false,
-      parent: parentId,
-      pinned: false,
-      source: "",
-      synced: false,
-      type: "DocumentType",
-      version: 0,
-      visibleName: name,
-    } as DocMetadata & Record<string, unknown>);
+    await fsp.writeFile(path.join(this.root, `${docId}.content`), JSON.stringify(content, null, 4));
+    await fsp.writeFile(path.join(this.root, `${docId}.local`), JSON.stringify({ contentFormatVersion: 2 }, null, 4));
+    await fsp.writeFile(path.join(this.root, `${docId}.pagedata`), "Blank\n".repeat(pageIds.length));
+    await this.writeMetadata(docId, this.baseMetadata(name, parentId));
+    this.invalidate();
     return docId;
   }
 
-  docExists(docId: string): boolean {
-    return fs.existsSync(path.join(this.root, `${docId}.metadata`));
-  }
-
-  /** List documents (not folders) in the store, newest first. */
-  listDocuments(): { id: string; name: string; parent: string; lastModified: number; fileType: string }[] {
-    const docs: { id: string; name: string; parent: string; lastModified: number; fileType: string }[] = [];
-    for (const f of fs.readdirSync(this.root)) {
-      if (!f.endsWith(".metadata")) continue;
-      try {
-        const meta = JSON.parse(fs.readFileSync(path.join(this.root, f), "utf8"));
-        if (meta.type !== "DocumentType" || meta.deleted || meta.parent === "trash") continue;
-        const id = f.slice(0, -".metadata".length);
-        let fileType = "notebook";
-        try {
-          fileType = JSON.parse(fs.readFileSync(path.join(this.root, `${id}.content`), "utf8")).fileType ?? "notebook";
-        } catch {
-          // Missing content file; treat as notebook.
-        }
-        docs.push({
-          id,
-          name: meta.visibleName,
-          parent: meta.parent ?? "",
-          lastModified: parseInt(meta.lastModified, 10) || 0,
-          fileType,
-        });
-      } catch {
-        continue;
-      }
-    }
-    return docs.sort((a, b) => b.lastModified - a.lastModified);
-  }
-
   /** Create a PDF document on the device from raw bytes. */
-  createPdfDocument(name: string, parentId: string, pdf: Uint8Array, pageCount: number): string {
-    const check = this.verify();
+  async createPdfDocument(name: string, parentId: string, pdf: Uint8Array, pageCount: number): Promise<string> {
+    const check = await this.verify();
     if (!check.ok) throw new StoreError(check.reason);
 
     const docId = randomUUID();
-    fs.mkdirSync(path.join(this.root, docId));
-    fs.writeFileSync(path.join(this.root, `${docId}.pdf`), pdf);
+    await fsp.mkdir(path.join(this.root, docId));
+    await fsp.writeFile(path.join(this.root, `${docId}.pdf`), pdf);
 
     const pageIds = Array.from({ length: pageCount }, () => randomUUID());
     const content = {
@@ -246,61 +305,70 @@ export class RemarkableStore {
       textScale: 1,
       zoomMode: "bestFit",
     };
-    const now = String(Date.now());
-    fs.writeFileSync(path.join(this.root, `${docId}.content`), JSON.stringify(content, null, 4));
-    fs.writeFileSync(path.join(this.root, `${docId}.local`), JSON.stringify({ contentFormatVersion: 1 }, null, 4));
-    fs.writeFileSync(path.join(this.root, `${docId}.pagedata`), "Blank\n".repeat(pageCount));
-    this.writeMetadata(docId, {
-      createdTime: now,
-      deleted: false,
-      lastModified: now,
-      lastOpened: "0",
-      lastOpenedPage: 0,
-      metadatamodified: false,
-      modified: false,
-      new: false,
-      parent: parentId,
-      pinned: false,
-      source: "",
-      synced: false,
-      type: "DocumentType",
-      version: 0,
-      visibleName: name,
-    } as DocMetadata & Record<string, unknown>);
+    await fsp.writeFile(path.join(this.root, `${docId}.content`), JSON.stringify(content, null, 4));
+    await fsp.writeFile(path.join(this.root, `${docId}.local`), JSON.stringify({ contentFormatVersion: 1 }, null, 4));
+    await fsp.writeFile(path.join(this.root, `${docId}.pagedata`), "Blank\n".repeat(pageCount));
+    await this.writeMetadata(docId, this.baseMetadata(name, parentId));
+    this.invalidate();
     return docId;
   }
 
-  readPdfBytes(docId: string): Uint8Array | null {
-    const p = path.join(this.root, `${docId}.pdf`);
-    return fs.existsSync(p) ? fs.readFileSync(p) : null;
+  async docExists(docId: string): Promise<boolean> {
+    try {
+      await fsp.access(path.join(this.root, `${docId}.metadata`));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async readPdfBytes(docId: string): Promise<Uint8Array | null> {
+    try {
+      return await fsp.readFile(path.join(this.root, `${docId}.pdf`));
+    } catch {
+      return null;
+    }
   }
 
   /** Page ids in order with their base-PDF page index (or null if inserted). */
-  private pageMap(docId: string): { pageId: string; pdfPageIndex: number | null }[] {
-    const content = JSON.parse(fs.readFileSync(path.join(this.root, `${docId}.content`), "utf8"));
-    if (content.cPages?.pages) {
-      return content.cPages.pages.map((p: { id: string; redir?: { value: number } }, i: number) => ({
-        pageId: p.id,
-        pdfPageIndex: p.redir ? p.redir.value : i,
-      }));
+  private async pageMap(docId: string): Promise<{ pageId: string; pdfPageIndex: number | null }[]> {
+    const content = await readJson(path.join(this.root, `${docId}.content`));
+    if (!content) throw new StoreError(`Cannot read content for ${docId}`);
+    const cPages = content.cPages as { pages?: { id: string; redir?: { value: number } }[] } | undefined;
+    if (cPages?.pages) {
+      return cPages.pages.map((p, i) => ({ pageId: p.id, pdfPageIndex: p.redir ? p.redir.value : i }));
     }
-    const pages: string[] = content.pages ?? [];
-    const redirect: number[] = content.redirectionPageMap ?? pages.map((_, i) => i);
-    return pages.map((pageId, i) => ({
-      pageId,
-      pdfPageIndex: redirect[i] >= 0 ? redirect[i] : null,
-    }));
+    const pages = (content.pages as string[]) ?? [];
+    const redirect = (content.redirectionPageMap as number[]) ?? pages.map((_, i) => i);
+    return pages.map((pageId, i) => ({ pageId, pdfPageIndex: redirect[i] >= 0 ? redirect[i] : null }));
+  }
+
+  /** Read all pages of a document, in page order. */
+  async readTextDocument(docId: string): Promise<{ pages: ParsedPage[]; lastModified: string }> {
+    const meta = await this.readMetadata(docId);
+    const pages: ParsedPage[] = [];
+    for (const { pageId } of await this.pageMap(docId)) {
+      try {
+        pages.push(parsePage(await fsp.readFile(path.join(this.root, docId, `${pageId}.rm`))));
+      } catch (e) {
+        pages.push({ paragraphs: [], hasStrokes: false, warnings: [`Missing or unreadable page ${pageId}: ${e}`] });
+      }
+    }
+    return { pages, lastModified: meta.lastModified };
   }
 
   /** Extract ink strokes per base-PDF page, for baking into the PDF. */
-  readInk(docId: string): { ink: PageInk[]; skippedPages: number } {
+  async readInk(docId: string): Promise<{ ink: PageInk[]; skippedPages: number }> {
     const ink: PageInk[] = [];
     let skippedPages = 0;
-    for (const { pageId, pdfPageIndex } of this.pageMap(docId)) {
-      const rmPath = path.join(this.root, docId, `${pageId}.rm`);
-      if (!fs.existsSync(rmPath)) continue;
+    for (const { pageId, pdfPageIndex } of await this.pageMap(docId)) {
+      let buf: Uint8Array;
       try {
-        const buf = fs.readFileSync(rmPath);
+        buf = await fsp.readFile(path.join(this.root, docId, `${pageId}.rm`));
+      } catch {
+        continue;
+      }
+      try {
         const strokes = parseStrokes(buf);
         if (!strokes.length) continue;
         if (pdfPageIndex === null) {
@@ -316,59 +384,35 @@ export class RemarkableStore {
   }
 
   /** Extract smart highlights per page, in page order (1-based page numbers). */
-  readHighlights(docId: string): { page: number; highlights: Highlight[] }[] {
-    const content = JSON.parse(fs.readFileSync(path.join(this.root, `${docId}.content`), "utf8"));
-    const pageIds: string[] =
-      content.cPages?.pages?.map((p: { id: string }) => p.id) ?? content.pages ?? [];
-    const redirect: number[] | undefined = content.redirectionPageMap;
+  async readHighlights(docId: string): Promise<{ page: number; highlights: Highlight[] }[]> {
     const out: { page: number; highlights: Highlight[] }[] = [];
-    pageIds.forEach((pid, i) => {
-      const rmPath = path.join(this.root, docId, `${pid}.rm`);
-      if (!fs.existsSync(rmPath)) return;
+    const map = await this.pageMap(docId);
+    for (let i = 0; i < map.length; i++) {
+      const { pageId, pdfPageIndex } = map[i];
+      let buf: Uint8Array;
       try {
-        const highlights = parseHighlights(fs.readFileSync(rmPath));
-        if (highlights.length) out.push({ page: (redirect?.[i] ?? i) + 1, highlights });
+        buf = await fsp.readFile(path.join(this.root, docId, `${pageId}.rm`));
       } catch {
-        // Ignore unreadable pages; highlights are best-effort.
+        continue;
       }
-    });
+      try {
+        const highlights = parseHighlights(buf);
+        if (highlights.length) out.push({ page: (pdfPageIndex ?? i) + 1, highlights });
+      } catch {
+        continue;
+      }
+    }
     return out;
   }
 
-  /** Resolve a folder id to its visible name ("" for the root). */
-  folderName(folderId: string): string {
-    if (!folderId) return "";
-    try {
-      return this.readMetadata(folderId).visibleName;
-    } catch {
-      return "?";
-    }
-  }
-
-  /** Read all pages of a document, in page order. */
-  readTextDocument(docId: string): { pages: ParsedPage[]; lastModified: string } {
-    const meta = this.readMetadata(docId);
-    const content = JSON.parse(fs.readFileSync(path.join(this.root, `${docId}.content`), "utf8"));
-    const pageEntries: { id: string }[] = content.cPages?.pages ?? [];
-    const pages: ParsedPage[] = [];
-    for (const p of pageEntries) {
-      const rmPath = path.join(this.root, docId, `${p.id}.rm`);
-      if (!fs.existsSync(rmPath)) {
-        pages.push({ paragraphs: [], hasStrokes: false, warnings: [`Missing page file ${p.id}.rm`] });
-        continue;
-      }
-      pages.push(parsePage(fs.readFileSync(rmPath)));
-    }
-    return { pages, lastModified: meta.lastModified };
-  }
-
   /** Move a document to the device trash (never hard-delete). */
-  trashDocument(docId: string) {
-    const meta = this.readMetadata(docId) as DocMetadata & Record<string, unknown>;
+  async trashDocument(docId: string) {
+    const meta = (await this.readMetadata(docId)) as DocMetadata & Record<string, unknown>;
     meta.parent = "trash";
     meta.lastModified = String(Date.now());
     meta.metadatamodified = true;
-    this.writeMetadata(docId, meta);
+    await this.writeMetadata(docId, meta);
+    this.invalidate();
   }
 
   /**
@@ -379,11 +423,23 @@ export class RemarkableStore {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const pending = new Set<string>();
     let watcher: fs.FSWatcher | null = null;
+    // The store sees heavy event churn during app sync; cache the tracked-id
+    // set briefly so we don't rebuild it for every single event.
+    let cachedIds: Set<string> | null = null;
+    let cachedAt = 0;
+    const tracked = () => {
+      const now = Date.now();
+      if (!cachedIds || now - cachedAt > 5000) {
+        cachedIds = docIds();
+        cachedAt = now;
+      }
+      return cachedIds;
+    };
     try {
       watcher = fs.watch(this.root, { recursive: true }, (_event, filename) => {
         if (!filename) return;
         const docId = String(filename).split(path.sep)[0].replace(/\.(metadata|content|local|pagedata)$/, "");
-        if (!docIds().has(docId)) return;
+        if (!tracked().has(docId)) return;
         pending.add(docId);
         if (timer) clearTimeout(timer);
         timer = setTimeout(() => {

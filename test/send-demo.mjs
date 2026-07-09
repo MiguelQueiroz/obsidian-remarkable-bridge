@@ -21,7 +21,7 @@ const md = [
 ].join("\n");
 
 const store = new RemarkableStore(process.env.RM_STORE ?? defaultStorePath());
-const check = store.verify();
+const check = await store.verify();
 if (!check.ok) {
   console.error(`store check failed: ${check.reason}`);
   process.exit(1);
@@ -29,12 +29,12 @@ if (!check.ok) {
 console.log(`store OK (${check.documents} documents)`);
 
 const { paragraphs, stash } = academic.markdownToDevice(md, true);
-const folderId = store.ensureFolder("Obsidian");
+const folderId = await store.ensureFolder("Obsidian");
 console.log(`folder "Obsidian": ${folderId}`);
-const docId = store.createTextDocument("Footnote demo", folderId, [paragraphs]);
+const docId = await store.createTextDocument("Footnote demo", folderId, [paragraphs]);
 console.log(`created document: ${docId}`);
 
-const { pages } = store.readTextDocument(docId);
+const { pages } = await store.readTextDocument(docId);
 const pulled = academic.deviceToMarkdown(pages[0].paragraphs, stash);
 const ok =
   pulled.markdown.includes("footnote already.[^1]") &&

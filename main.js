@@ -22050,6 +22050,7 @@ function buildTextPage(paragraphs, authorUuid) {
 }
 
 // src/store.ts
+var fsp = fs.promises;
 var StoreError = class extends Error {
 };
 function defaultStorePath() {
@@ -22064,51 +22065,110 @@ function defaultStorePath() {
   }
   return path.join(os.homedir(), ".local", "share", "remarkable", "desktop");
 }
+async function readJson(p) {
+  try {
+    return JSON.parse(await fsp.readFile(p, "utf8"));
+  } catch {
+    return null;
+  }
+}
 var RemarkableStore = class {
   constructor(root) {
     this.root = root;
+    this.snapshotCache = null;
   }
   /** Sanity-check the layout before touching anything. */
-  verify() {
-    if (!fs.existsSync(this.root)) {
+  async verify() {
+    try {
+      await fsp.access(this.root);
+    } catch {
       return { ok: false, documents: 0, reason: `Store not found at ${this.root}. Is the reMarkable desktop app installed?` };
     }
-    const metas = fs.readdirSync(this.root).filter((f) => f.endsWith(".metadata"));
+    const metas = (await fsp.readdir(this.root)).filter((f) => f.endsWith(".metadata"));
     if (metas.length === 0) {
       return { ok: false, documents: 0, reason: "Store contains no documents; open the reMarkable desktop app once first." };
     }
-    try {
-      const sample = JSON.parse(fs.readFileSync(path.join(this.root, metas[0]), "utf8"));
-      if (typeof sample.visibleName !== "string" || typeof sample.type !== "string") {
-        return { ok: false, documents: metas.length, reason: "Store layout not recognized (app update?). Refusing to write." };
-      }
-    } catch (e) {
-      return { ok: false, documents: metas.length, reason: `Could not read store metadata: ${e}` };
+    const sample = await readJson(path.join(this.root, metas[0]));
+    if (!sample || typeof sample.visibleName !== "string" || typeof sample.type !== "string") {
+      return { ok: false, documents: metas.length, reason: "Store layout not recognized (app update?). Refusing to write." };
     }
     return { ok: true, documents: metas.length };
   }
-  readMetadata(docId) {
-    return JSON.parse(fs.readFileSync(path.join(this.root, `${docId}.metadata`), "utf8"));
+  async readMetadata(docId) {
+    const meta = await readJson(path.join(this.root, `${docId}.metadata`));
+    if (!meta) throw new StoreError(`Cannot read metadata for ${docId}`);
+    return meta;
   }
-  writeMetadata(docId, meta) {
-    fs.writeFileSync(path.join(this.root, `${docId}.metadata`), JSON.stringify(meta, null, 4));
+  async writeMetadata(docId, meta) {
+    await fsp.writeFile(path.join(this.root, `${docId}.metadata`), JSON.stringify(meta, null, 4));
+  }
+  /**
+   * One pass over the library: all documents plus a folder-name map.
+   * Cached for 10 seconds; concurrent callers share one scan.
+   */
+  snapshot() {
+    if (this.snapshotCache && Date.now() - this.snapshotCache.at < 1e4) {
+      return this.snapshotCache.promise;
+    }
+    const promise = this.buildSnapshot();
+    this.snapshotCache = { at: Date.now(), promise };
+    promise.catch(() => this.snapshotCache = null);
+    return promise;
+  }
+  invalidate() {
+    this.snapshotCache = null;
+  }
+  async buildSnapshot() {
+    const entries = await fsp.readdir(this.root);
+    const metaFiles = entries.filter((f) => f.endsWith(".metadata"));
+    const docs = [];
+    const folders = /* @__PURE__ */ new Map();
+    const docIdsNeedingType = [];
+    const CHUNK = 32;
+    for (let i = 0; i < metaFiles.length; i += CHUNK) {
+      await Promise.all(
+        metaFiles.slice(i, i + CHUNK).map(async (f) => {
+          const meta = await readJson(path.join(this.root, f));
+          if (!meta) return;
+          const id2 = f.slice(0, -".metadata".length);
+          if (meta.type === "CollectionType" && !meta.deleted) {
+            folders.set(id2, meta.visibleName);
+            return;
+          }
+          if (meta.type !== "DocumentType" || meta.deleted || meta.parent === "trash") return;
+          const info = {
+            id: id2,
+            name: meta.visibleName,
+            parent: meta.parent ?? "",
+            lastModified: parseInt(meta.lastModified, 10) || 0,
+            fileType: "notebook"
+          };
+          docs.push(info);
+          docIdsNeedingType.push(info);
+        })
+      );
+    }
+    for (let i = 0; i < docIdsNeedingType.length; i += CHUNK) {
+      await Promise.all(
+        docIdsNeedingType.slice(i, i + CHUNK).map(async (info) => {
+          const content = await readJson(path.join(this.root, `${info.id}.content`));
+          if (content && typeof content.fileType === "string") info.fileType = content.fileType;
+        })
+      );
+    }
+    docs.sort((a, b) => b.lastModified - a.lastModified);
+    return { docs, folders, documents: metaFiles.length };
   }
   /** Find a folder by name at the root level, or create it. Returns its id. */
-  ensureFolder(name) {
-    for (const f of fs.readdirSync(this.root)) {
-      if (!f.endsWith(".metadata")) continue;
-      try {
-        const meta = JSON.parse(fs.readFileSync(path.join(this.root, f), "utf8"));
-        if (meta.type === "CollectionType" && meta.visibleName === name && meta.parent === "" && !meta.deleted) {
-          return f.slice(0, -".metadata".length);
-        }
-      } catch {
-        continue;
-      }
+  async ensureFolder(name) {
+    const snap = await this.snapshot();
+    for (const [id3, folderName] of snap.folders) {
+      const meta = await this.readMetadata(id3).catch(() => null);
+      if (folderName === name && meta && meta.parent === "" && !meta.deleted) return id3;
     }
     const id2 = (0, import_crypto.randomUUID)();
     const now = String(Date.now());
-    this.writeMetadata(id2, {
+    await this.writeMetadata(id2, {
       createdTime: now,
       deleted: false,
       lastModified: now,
@@ -22125,22 +22185,43 @@ var RemarkableStore = class {
       version: 0,
       visibleName: name
     });
-    fs.writeFileSync(path.join(this.root, `${id2}.content`), JSON.stringify({ tags: [] }, null, 4));
+    await fsp.writeFile(path.join(this.root, `${id2}.content`), JSON.stringify({ tags: [] }, null, 4));
+    this.invalidate();
     return id2;
   }
+  baseMetadata(name, parentId) {
+    const now = String(Date.now());
+    return {
+      createdTime: now,
+      deleted: false,
+      lastModified: now,
+      lastOpened: "0",
+      lastOpenedPage: 0,
+      metadatamodified: false,
+      modified: false,
+      new: false,
+      parent: parentId,
+      pinned: false,
+      source: "",
+      synced: false,
+      type: "DocumentType",
+      version: 0,
+      visibleName: name
+    };
+  }
   /** Create a fresh typed-text document. Returns the new document id. */
-  createTextDocument(name, parentId, pages) {
-    const check = this.verify();
+  async createTextDocument(name, parentId, pages) {
+    const check = await this.verify();
     if (!check.ok) throw new StoreError(check.reason);
     const docId = (0, import_crypto.randomUUID)();
     const authorUuid = (0, import_crypto.randomUUID)();
     const docDir = path.join(this.root, docId);
-    fs.mkdirSync(docDir);
+    await fsp.mkdir(docDir);
     const pageIds = [];
     for (const paragraphs of pages) {
       const pageId = (0, import_crypto.randomUUID)();
       pageIds.push(pageId);
-      fs.writeFileSync(path.join(docDir, `${pageId}.rm`), buildTextPage(paragraphs, authorUuid));
+      await fsp.writeFile(path.join(docDir, `${pageId}.rm`), buildTextPage(paragraphs, authorUuid));
     }
     const idx = (i) => `a${String.fromCharCode(97 + i)}`;
     const content = {
@@ -22167,66 +22248,20 @@ var RemarkableStore = class {
       textScale: 0,
       zoomMode: "bestFit"
     };
-    const now = String(Date.now());
-    fs.writeFileSync(path.join(this.root, `${docId}.content`), JSON.stringify(content, null, 4));
-    fs.writeFileSync(path.join(this.root, `${docId}.local`), JSON.stringify({ contentFormatVersion: 2 }, null, 4));
-    fs.writeFileSync(path.join(this.root, `${docId}.pagedata`), "Blank\n".repeat(pageIds.length));
-    this.writeMetadata(docId, {
-      createdTime: now,
-      deleted: false,
-      lastModified: now,
-      lastOpened: "0",
-      lastOpenedPage: 0,
-      metadatamodified: false,
-      modified: false,
-      new: false,
-      parent: parentId,
-      pinned: false,
-      source: "",
-      synced: false,
-      type: "DocumentType",
-      version: 0,
-      visibleName: name
-    });
+    await fsp.writeFile(path.join(this.root, `${docId}.content`), JSON.stringify(content, null, 4));
+    await fsp.writeFile(path.join(this.root, `${docId}.local`), JSON.stringify({ contentFormatVersion: 2 }, null, 4));
+    await fsp.writeFile(path.join(this.root, `${docId}.pagedata`), "Blank\n".repeat(pageIds.length));
+    await this.writeMetadata(docId, this.baseMetadata(name, parentId));
+    this.invalidate();
     return docId;
   }
-  docExists(docId) {
-    return fs.existsSync(path.join(this.root, `${docId}.metadata`));
-  }
-  /** List documents (not folders) in the store, newest first. */
-  listDocuments() {
-    const docs = [];
-    for (const f of fs.readdirSync(this.root)) {
-      if (!f.endsWith(".metadata")) continue;
-      try {
-        const meta = JSON.parse(fs.readFileSync(path.join(this.root, f), "utf8"));
-        if (meta.type !== "DocumentType" || meta.deleted || meta.parent === "trash") continue;
-        const id2 = f.slice(0, -".metadata".length);
-        let fileType = "notebook";
-        try {
-          fileType = JSON.parse(fs.readFileSync(path.join(this.root, `${id2}.content`), "utf8")).fileType ?? "notebook";
-        } catch {
-        }
-        docs.push({
-          id: id2,
-          name: meta.visibleName,
-          parent: meta.parent ?? "",
-          lastModified: parseInt(meta.lastModified, 10) || 0,
-          fileType
-        });
-      } catch {
-        continue;
-      }
-    }
-    return docs.sort((a, b) => b.lastModified - a.lastModified);
-  }
   /** Create a PDF document on the device from raw bytes. */
-  createPdfDocument(name, parentId, pdf, pageCount) {
-    const check = this.verify();
+  async createPdfDocument(name, parentId, pdf, pageCount) {
+    const check = await this.verify();
     if (!check.ok) throw new StoreError(check.reason);
     const docId = (0, import_crypto.randomUUID)();
-    fs.mkdirSync(path.join(this.root, docId));
-    fs.writeFileSync(path.join(this.root, `${docId}.pdf`), pdf);
+    await fsp.mkdir(path.join(this.root, docId));
+    await fsp.writeFile(path.join(this.root, `${docId}.pdf`), pdf);
     const pageIds = Array.from({ length: pageCount }, () => (0, import_crypto.randomUUID)());
     const content = {
       coverPageNumber: -1,
@@ -22251,58 +22286,65 @@ var RemarkableStore = class {
       textScale: 1,
       zoomMode: "bestFit"
     };
-    const now = String(Date.now());
-    fs.writeFileSync(path.join(this.root, `${docId}.content`), JSON.stringify(content, null, 4));
-    fs.writeFileSync(path.join(this.root, `${docId}.local`), JSON.stringify({ contentFormatVersion: 1 }, null, 4));
-    fs.writeFileSync(path.join(this.root, `${docId}.pagedata`), "Blank\n".repeat(pageCount));
-    this.writeMetadata(docId, {
-      createdTime: now,
-      deleted: false,
-      lastModified: now,
-      lastOpened: "0",
-      lastOpenedPage: 0,
-      metadatamodified: false,
-      modified: false,
-      new: false,
-      parent: parentId,
-      pinned: false,
-      source: "",
-      synced: false,
-      type: "DocumentType",
-      version: 0,
-      visibleName: name
-    });
+    await fsp.writeFile(path.join(this.root, `${docId}.content`), JSON.stringify(content, null, 4));
+    await fsp.writeFile(path.join(this.root, `${docId}.local`), JSON.stringify({ contentFormatVersion: 1 }, null, 4));
+    await fsp.writeFile(path.join(this.root, `${docId}.pagedata`), "Blank\n".repeat(pageCount));
+    await this.writeMetadata(docId, this.baseMetadata(name, parentId));
+    this.invalidate();
     return docId;
   }
-  readPdfBytes(docId) {
-    const p = path.join(this.root, `${docId}.pdf`);
-    return fs.existsSync(p) ? fs.readFileSync(p) : null;
+  async docExists(docId) {
+    try {
+      await fsp.access(path.join(this.root, `${docId}.metadata`));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  async readPdfBytes(docId) {
+    try {
+      return await fsp.readFile(path.join(this.root, `${docId}.pdf`));
+    } catch {
+      return null;
+    }
   }
   /** Page ids in order with their base-PDF page index (or null if inserted). */
-  pageMap(docId) {
-    const content = JSON.parse(fs.readFileSync(path.join(this.root, `${docId}.content`), "utf8"));
-    if (content.cPages?.pages) {
-      return content.cPages.pages.map((p, i) => ({
-        pageId: p.id,
-        pdfPageIndex: p.redir ? p.redir.value : i
-      }));
+  async pageMap(docId) {
+    const content = await readJson(path.join(this.root, `${docId}.content`));
+    if (!content) throw new StoreError(`Cannot read content for ${docId}`);
+    const cPages = content.cPages;
+    if (cPages?.pages) {
+      return cPages.pages.map((p, i) => ({ pageId: p.id, pdfPageIndex: p.redir ? p.redir.value : i }));
     }
     const pages = content.pages ?? [];
     const redirect = content.redirectionPageMap ?? pages.map((_, i) => i);
-    return pages.map((pageId, i) => ({
-      pageId,
-      pdfPageIndex: redirect[i] >= 0 ? redirect[i] : null
-    }));
+    return pages.map((pageId, i) => ({ pageId, pdfPageIndex: redirect[i] >= 0 ? redirect[i] : null }));
+  }
+  /** Read all pages of a document, in page order. */
+  async readTextDocument(docId) {
+    const meta = await this.readMetadata(docId);
+    const pages = [];
+    for (const { pageId } of await this.pageMap(docId)) {
+      try {
+        pages.push(parsePage(await fsp.readFile(path.join(this.root, docId, `${pageId}.rm`))));
+      } catch (e) {
+        pages.push({ paragraphs: [], hasStrokes: false, warnings: [`Missing or unreadable page ${pageId}: ${e}`] });
+      }
+    }
+    return { pages, lastModified: meta.lastModified };
   }
   /** Extract ink strokes per base-PDF page, for baking into the PDF. */
-  readInk(docId) {
+  async readInk(docId) {
     const ink = [];
     let skippedPages = 0;
-    for (const { pageId, pdfPageIndex } of this.pageMap(docId)) {
-      const rmPath = path.join(this.root, docId, `${pageId}.rm`);
-      if (!fs.existsSync(rmPath)) continue;
+    for (const { pageId, pdfPageIndex } of await this.pageMap(docId)) {
+      let buf;
       try {
-        const buf = fs.readFileSync(rmPath);
+        buf = await fsp.readFile(path.join(this.root, docId, `${pageId}.rm`));
+      } catch {
+        continue;
+      }
+      try {
         const strokes = parseStrokes(buf);
         if (!strokes.length) continue;
         if (pdfPageIndex === null) {
@@ -22317,54 +22359,34 @@ var RemarkableStore = class {
     return { ink, skippedPages };
   }
   /** Extract smart highlights per page, in page order (1-based page numbers). */
-  readHighlights(docId) {
-    const content = JSON.parse(fs.readFileSync(path.join(this.root, `${docId}.content`), "utf8"));
-    const pageIds = content.cPages?.pages?.map((p) => p.id) ?? content.pages ?? [];
-    const redirect = content.redirectionPageMap;
+  async readHighlights(docId) {
     const out = [];
-    pageIds.forEach((pid, i) => {
-      const rmPath = path.join(this.root, docId, `${pid}.rm`);
-      if (!fs.existsSync(rmPath)) return;
+    const map = await this.pageMap(docId);
+    for (let i = 0; i < map.length; i++) {
+      const { pageId, pdfPageIndex } = map[i];
+      let buf;
       try {
-        const highlights = parseHighlights(fs.readFileSync(rmPath));
-        if (highlights.length) out.push({ page: (redirect?.[i] ?? i) + 1, highlights });
+        buf = await fsp.readFile(path.join(this.root, docId, `${pageId}.rm`));
       } catch {
-      }
-    });
-    return out;
-  }
-  /** Resolve a folder id to its visible name ("" for the root). */
-  folderName(folderId) {
-    if (!folderId) return "";
-    try {
-      return this.readMetadata(folderId).visibleName;
-    } catch {
-      return "?";
-    }
-  }
-  /** Read all pages of a document, in page order. */
-  readTextDocument(docId) {
-    const meta = this.readMetadata(docId);
-    const content = JSON.parse(fs.readFileSync(path.join(this.root, `${docId}.content`), "utf8"));
-    const pageEntries = content.cPages?.pages ?? [];
-    const pages = [];
-    for (const p of pageEntries) {
-      const rmPath = path.join(this.root, docId, `${p.id}.rm`);
-      if (!fs.existsSync(rmPath)) {
-        pages.push({ paragraphs: [], hasStrokes: false, warnings: [`Missing page file ${p.id}.rm`] });
         continue;
       }
-      pages.push(parsePage(fs.readFileSync(rmPath)));
+      try {
+        const highlights = parseHighlights(buf);
+        if (highlights.length) out.push({ page: (pdfPageIndex ?? i) + 1, highlights });
+      } catch {
+        continue;
+      }
     }
-    return { pages, lastModified: meta.lastModified };
+    return out;
   }
   /** Move a document to the device trash (never hard-delete). */
-  trashDocument(docId) {
-    const meta = this.readMetadata(docId);
+  async trashDocument(docId) {
+    const meta = await this.readMetadata(docId);
     meta.parent = "trash";
     meta.lastModified = String(Date.now());
     meta.metadatamodified = true;
-    this.writeMetadata(docId, meta);
+    await this.writeMetadata(docId, meta);
+    this.invalidate();
   }
   /**
    * Watch tracked documents for changes arriving from the device.
@@ -22374,11 +22396,21 @@ var RemarkableStore = class {
     let timer = null;
     const pending = /* @__PURE__ */ new Set();
     let watcher = null;
+    let cachedIds = null;
+    let cachedAt = 0;
+    const tracked = () => {
+      const now = Date.now();
+      if (!cachedIds || now - cachedAt > 5e3) {
+        cachedIds = docIds();
+        cachedAt = now;
+      }
+      return cachedIds;
+    };
     try {
       watcher = fs.watch(this.root, { recursive: true }, (_event, filename) => {
         if (!filename) return;
         const docId = String(filename).split(path.sep)[0].replace(/\.(metadata|content|local|pagedata)$/, "");
-        if (!docIds().has(docId)) return;
+        if (!tracked().has(docId)) return;
         pending.add(docId);
         if (timer) clearTimeout(timer);
         timer = setTimeout(() => {
@@ -22604,9 +22636,14 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     this.changedDocs = /* @__PURE__ */ new Set();
     this.ribbonEl = null;
     this.statusEl = null;
+    this.storeInstance = null;
   }
   store() {
-    return new RemarkableStore(this.settings.storePath || defaultStorePath());
+    const root = this.settings.storePath || defaultStorePath();
+    if (!this.storeInstance || this.storeInstance.root !== root) {
+      this.storeInstance = new RemarkableStore(root);
+    }
+    return this.storeInstance;
   }
   checkoutForFile(file) {
     return Object.values(this.settings.checkouts).find((c) => c.path === file.path);
@@ -22692,7 +22729,14 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     this.addCommand({
       id: "import-from-remarkable",
       name: "Import a reMarkable note into the vault",
-      callback: () => new ImportModal(this.app, this).open()
+      callback: async () => {
+        try {
+          const snap = await this.store().snapshot();
+          new ImportModal(this.app, this, snap).open();
+        } catch (e) {
+          new import_obsidian.Notice(`Cannot read the reMarkable store: ${e instanceof Error ? e.message : e}`, 8e3);
+        }
+      }
     });
     this.addCommand({
       id: "open-dashboard",
@@ -22785,7 +22829,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
   async sendNote(file) {
     try {
       const store = this.store();
-      const check = store.verify();
+      const check = await store.verify();
       if (!check.ok) {
         new import_obsidian.Notice(`reMarkable bridge: ${check.reason}`, 1e4);
         return;
@@ -22793,8 +22837,8 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
       const raw = await this.app.vault.read(file);
       const { body } = this.splitFrontmatter(raw);
       const { paragraphs, stash } = markdownToDevice(body, this.settings.appendCheatSheet);
-      const folderId = store.ensureFolder(this.settings.deviceFolder);
-      const docId = store.createTextDocument(file.basename, folderId, [paragraphs]);
+      const folderId = await store.ensureFolder(this.settings.deviceFolder);
+      const docId = await store.createTextDocument(file.basename, folderId, [paragraphs]);
       this.settings.checkouts[docId] = { docId, path: file.path, stash, sentAt: Date.now() };
       await this.saveData(this.settings);
       await this.app.fileManager.processFrontMatter(file, (fm) => {
@@ -22817,11 +22861,11 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     }
     try {
       const store = this.store();
-      if (!store.docExists(checkout.docId)) {
+      if (!await store.docExists(checkout.docId)) {
         new import_obsidian.Notice("The reMarkable copy no longer exists. Use force release to unlock the note.", 1e4);
         return;
       }
-      const { pages } = store.readTextDocument(checkout.docId);
+      const { pages } = await store.readTextDocument(checkout.docId);
       const paragraphs = [];
       pages.forEach((p, i) => {
         if (i > 0) paragraphs.push({ style: 1, spans: [] });
@@ -22843,7 +22887,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
       if (hasInk && this.settings.trashAfterPull) {
         warnings.push("Device copy kept (not archived) because it contains handwriting.");
       }
-      if (this.settings.trashAfterPull && !hasInk) store.trashDocument(checkout.docId);
+      if (this.settings.trashAfterPull && !hasInk) await store.trashDocument(checkout.docId);
       delete this.settings.checkouts[checkout.docId];
       this.changedDocs.delete(checkout.docId);
       await this.saveData(this.settings);
@@ -22859,9 +22903,9 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     const checkout = this.checkoutForFile(file);
     if (!checkout) return;
     const store = this.store();
-    if (checkout.kind !== "pdf" && store.docExists(checkout.docId)) {
+    if (checkout.kind !== "pdf" && await store.docExists(checkout.docId)) {
       try {
-        store.trashDocument(checkout.docId);
+        await store.trashDocument(checkout.docId);
       } catch (e) {
         console.error(e);
       }
@@ -22891,7 +22935,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
   async sendPdf(file) {
     try {
       const store = this.store();
-      const check = store.verify();
+      const check = await store.verify();
       if (!check.ok) {
         new import_obsidian.Notice(`reMarkable bridge: ${check.reason}`, 1e4);
         return;
@@ -22900,8 +22944,8 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
       const { PDFDocument: PDFDocument2 } = await Promise.resolve().then(() => (init_es2(), es_exports));
       const pdf = await PDFDocument2.load(bytes, { ignoreEncryption: true, updateMetadata: false });
       const pageCount = pdf.getPageCount();
-      const folderId = store.ensureFolder(this.settings.deviceFolder);
-      const docId = store.createPdfDocument(file.basename, folderId, bytes, pageCount);
+      const folderId = await store.ensureFolder(this.settings.deviceFolder);
+      const docId = await store.createPdfDocument(file.basename, folderId, bytes, pageCount);
       this.settings.checkouts[docId] = { docId, path: file.path, stash: [], sentAt: Date.now(), kind: "pdf" };
       await this.saveData(this.settings);
       this.startWatcher();
@@ -22918,19 +22962,19 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     if (!checkout) return;
     try {
       const store = this.store();
-      if (!store.docExists(checkout.docId)) {
+      if (!await store.docExists(checkout.docId)) {
         new import_obsidian.Notice("The reMarkable copy no longer exists. Use 'Stop tracking' to unlink.", 1e4);
         return;
       }
-      const perPage = store.readHighlights(checkout.docId);
-      const { ink, skippedPages } = store.readInk(checkout.docId);
+      const perPage = await store.readHighlights(checkout.docId);
+      const { ink, skippedPages } = await store.readInk(checkout.docId);
       if (!perPage.length && !ink.length) {
         new import_obsidian.Notice("Nothing to pull yet: no ink or highlights found on the device copy.", 1e4);
         return;
       }
       const made = [];
       if (ink.length) {
-        const base = store.readPdfBytes(checkout.docId);
+        const base = await store.readPdfBytes(checkout.docId);
         if (base) {
           const { bakeInkOntoPdf: bakeInkOntoPdf2 } = await Promise.resolve().then(() => (init_pdf_ink(), pdf_ink_exports));
           const baked = await bakeInkOntoPdf2(base, ink);
@@ -22970,12 +23014,12 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
   async importPdf(docId, name) {
     try {
       const store = this.store();
-      let bytes = store.readPdfBytes(docId);
+      let bytes = await store.readPdfBytes(docId);
       if (!bytes) {
         new import_obsidian.Notice(`No PDF file found for "${name}".`, 8e3);
         return;
       }
-      const { ink } = store.readInk(docId);
+      const { ink } = await store.readInk(docId);
       if (ink.length) {
         const { bakeInkOntoPdf: bakeInkOntoPdf2 } = await Promise.resolve().then(() => (init_pdf_ink(), pdf_ink_exports));
         bytes = await bakeInkOntoPdf2(bytes, ink);
@@ -22988,7 +23032,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
         target = (0, import_obsidian.normalizePath)(`${folder}/${safeName} ${i}.pdf`);
       }
       const pdfFile = await this.app.vault.createBinary(target, bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
-      const perPage = store.readHighlights(docId);
+      const perPage = await store.readHighlights(docId);
       if (perPage.length) {
         const lines = [`Highlights from [[${pdfFile.name}]], imported ${(/* @__PURE__ */ new Date()).toLocaleString()}.`, ""];
         for (const { page, highlights } of perPage) {
@@ -23012,7 +23056,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
   async importDocument(docId, name) {
     try {
       const store = this.store();
-      const { pages } = store.readTextDocument(docId);
+      const { pages } = await store.readTextDocument(docId);
       const paragraphs = [];
       pages.forEach((p, i) => {
         if (i > 0) paragraphs.push({ style: 1, spans: [] });
@@ -23046,14 +23090,20 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
       if (!(view instanceof import_obsidian.MarkdownView)) continue;
-      view.containerEl.querySelector(".rm-bridge-banner")?.remove();
       const file = view.file;
-      if (!file) continue;
-      const checkout = this.checkoutForFile(file);
-      if (!checkout) continue;
-      const banner = createDiv({ cls: "rm-bridge-banner" });
-      const sent = new Date(checkout.sentAt);
+      const checkout = file ? this.checkoutForFile(file) : void 0;
+      const existing = view.containerEl.querySelector(".rm-bridge-banner");
+      if (!checkout || !file) {
+        existing?.remove();
+        continue;
+      }
       const hasChanges = this.changedDocs.has(checkout.docId);
+      const stateKey = `${checkout.docId}:${hasChanges}:${this.settings.lockWhileOut}`;
+      if (existing?.dataset.rmState === stateKey) continue;
+      existing?.remove();
+      const banner = createDiv({ cls: "rm-bridge-banner" });
+      banner.dataset.rmState = stateKey;
+      const sent = new Date(checkout.sentAt);
       banner.createSpan({
         text: hasChanges ? "Edited on your reMarkable; changes are ready. " : `On your reMarkable since ${sent.toLocaleString()}. ${this.settings.lockWhileOut ? "Read-only here. " : ""}`
       });
@@ -23070,6 +23120,8 @@ var DashboardView = class extends import_obsidian.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
+    this.renderQueued = false;
+    this.lastRender = 0;
   }
   getViewType() {
     return DASHBOARD_VIEW;
@@ -23081,17 +23133,28 @@ var DashboardView = class extends import_obsidian.ItemView {
     return "tablet";
   }
   async onOpen() {
-    this.render();
+    void this.renderNow();
   }
+  /** Rate-limited render; the library listing is async and cached. */
   render() {
+    if (this.renderQueued) return;
+    const hidden = !(this.containerEl.isShown?.() ?? true);
+    const wait = Math.max(0, 3e3 - (Date.now() - this.lastRender));
+    if (!hidden && wait === 0) {
+      void this.renderNow();
+      return;
+    }
+    this.renderQueued = true;
+    window.setTimeout(() => {
+      this.renderQueued = false;
+      if (this.containerEl.isShown?.() ?? true) void this.renderNow();
+    }, wait || 1e3);
+  }
+  async renderNow() {
+    this.lastRender = Date.now();
     const el = this.contentEl;
     el.empty();
     el.addClass("rm-bridge-dashboard");
-    const store = this.plugin.store();
-    const check = store.verify();
-    const status = el.createDiv({ cls: "rm-bridge-dash-status" });
-    (0, import_obsidian.setIcon)(status.createSpan(), check.ok ? "check-circle" : "alert-circle");
-    status.createSpan({ text: check.ok ? ` Desktop app store: ${check.documents} documents` : ` ${check.reason}` });
     el.createEl("h5", { text: "Checked out to the device" });
     const outs = Object.values(this.plugin.settings.checkouts);
     if (!outs.length) el.createDiv({ text: "Nothing checked out.", cls: "rm-bridge-dash-empty" });
@@ -23110,46 +23173,57 @@ var DashboardView = class extends import_obsidian.ItemView {
         if (file) void this.plugin.pullNote(file);
       };
     }
-    if (check.ok) {
-      el.createEl("h5", { text: "On the device" });
-      const outIds = new Set(outs.map((c) => c.docId));
-      const docs = store.listDocuments().slice(0, 30);
-      for (const d of docs) {
-        if (outIds.has(d.id)) continue;
-        const row = el.createDiv({ cls: "rm-bridge-dash-row" });
-        const info = row.createDiv();
-        info.createDiv({ text: d.name, cls: "rm-bridge-dash-name" });
-        const folder = store.folderName(d.parent);
-        info.createDiv({
-          text: `${d.fileType === "pdf" ? "PDF \xB7 " : d.fileType === "epub" ? "EPUB \xB7 " : ""}${folder ? folder + " \xB7 " : ""}${new Date(d.lastModified).toLocaleDateString()}`,
-          cls: "rm-bridge-dash-sub"
-        });
-        if (d.fileType === "pdf") {
-          const imp = row.createEl("button", { text: "Import PDF" });
-          imp.onclick = () => void this.plugin.importPdf(d.id, d.name);
-        } else if (d.fileType === "notebook" || d.fileType === "") {
-          const imp = row.createEl("button", { text: "Import" });
-          imp.onclick = () => void this.plugin.importDocument(d.id, d.name);
-        }
+    const status = el.createDiv({ cls: "rm-bridge-dash-status" });
+    status.createSpan({ text: "Reading device library\u2026" });
+    const listEl = el.createDiv();
+    const store = this.plugin.store();
+    let snap;
+    try {
+      snap = await store.snapshot();
+    } catch (e) {
+      status.empty();
+      (0, import_obsidian.setIcon)(status.createSpan(), "alert-circle");
+      status.createSpan({ text: ` ${e instanceof Error ? e.message : e}` });
+      return;
+    }
+    if (this.lastRender !== Date.now() && !el.isConnected) return;
+    status.empty();
+    (0, import_obsidian.setIcon)(status.createSpan(), "check-circle");
+    status.createSpan({ text: ` Desktop app store: ${snap.documents} documents` });
+    listEl.createEl("h5", { text: "On the device" });
+    const outIds = new Set(outs.map((c) => c.docId));
+    for (const d of snap.docs.slice(0, 30)) {
+      if (outIds.has(d.id)) continue;
+      const row = listEl.createDiv({ cls: "rm-bridge-dash-row" });
+      const info = row.createDiv();
+      info.createDiv({ text: d.name, cls: "rm-bridge-dash-name" });
+      const folder = snap.folders.get(d.parent) ?? "";
+      info.createDiv({
+        text: `${d.fileType === "pdf" ? "PDF \xB7 " : d.fileType === "epub" ? "EPUB \xB7 " : ""}${folder ? folder + " \xB7 " : ""}${new Date(d.lastModified).toLocaleDateString()}`,
+        cls: "rm-bridge-dash-sub"
+      });
+      if (d.fileType === "pdf") {
+        const imp = row.createEl("button", { text: "Import PDF" });
+        imp.onclick = () => void this.plugin.importPdf(d.id, d.name);
+      } else if (d.fileType === "notebook" || d.fileType === "") {
+        const imp = row.createEl("button", { text: "Import" });
+        imp.onclick = () => void this.plugin.importDocument(d.id, d.name);
       }
     }
   }
 };
 var ImportModal = class extends import_obsidian.FuzzySuggestModal {
-  constructor(app, plugin) {
+  constructor(app, plugin, snap) {
     super(app);
     this.plugin = plugin;
+    this.snap = snap;
     this.setPlaceholder("Import a reMarkable document\u2026");
   }
   getItems() {
-    try {
-      return this.plugin.store().listDocuments().filter((d) => d.fileType === "pdf" || d.fileType === "notebook" || d.fileType === "");
-    } catch {
-      return [];
-    }
+    return this.snap.docs.filter((d) => d.fileType === "pdf" || d.fileType === "notebook" || d.fileType === "");
   }
   getItemText(item) {
-    const folder = this.plugin.store().folderName(item.parent);
+    const folder = this.snap.folders.get(item.parent) ?? "";
     const prefix = item.fileType === "pdf" ? "[PDF] " : "";
     return prefix + (folder ? `${folder}/${item.name}` : item.name);
   }
@@ -23167,15 +23241,17 @@ var BridgeSettingTab = class extends import_obsidian.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     const store = this.plugin.store();
-    const check = store.verify();
-    new import_obsidian.Setting(containerEl).setName("Desktop app store").setDesc(
-      check.ok ? `Connected: ${check.documents} documents at ${store.root}` : `Not connected: ${check.reason}`
-    ).addText(
+    const storeSetting = new import_obsidian.Setting(containerEl).setName("Desktop app store").setDesc("Checking\u2026").addText(
       (text) => text.setPlaceholder(defaultStorePath()).setValue(this.plugin.settings.storePath).onChange(async (value) => {
         this.plugin.settings.storePath = value.trim();
         await this.plugin.saveData(this.plugin.settings);
       })
     );
+    void store.verify().then((check) => {
+      storeSetting.setDesc(
+        check.ok ? `Connected: ${check.documents} documents at ${store.root}` : `Not connected: ${check.reason}`
+      );
+    });
     new import_obsidian.Setting(containerEl).setName("Device folder").setDesc("Folder on the reMarkable where sent notes appear.").addText(
       (text) => text.setValue(this.plugin.settings.deviceFolder).onChange(async (value) => {
         this.plugin.settings.deviceFolder = value.trim() || "Obsidian";
