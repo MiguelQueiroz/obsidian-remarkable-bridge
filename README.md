@@ -86,6 +86,11 @@ access, so here is exactly what it touches:
   anything, never rewrites an existing page file, and refuses to write at all
   if the directory layout doesn't look like a reMarkable store.
 - **Inside the vault** it uses only Obsidian's own vault API.
+- **Vault enumeration**: the plugin lists the vault's files in exactly one
+  place — when you open the "Export to reMarkable…" picker, to show you your
+  notes and PDFs to choose from. The list is built in memory for that picker
+  and discarded when it closes. Nothing about your vault's structure is
+  stored, indexed in the background, or written anywhere.
 - **Network**: the plugin makes no network requests of any kind. Syncing with
   the tablet is done entirely by the official reMarkable app. Nothing leaves
   your machine because of this plugin.
