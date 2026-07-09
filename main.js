@@ -22767,11 +22767,6 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
       }
     });
     this.addCommand({
-      id: "open-dashboard",
-      name: "Open reMarkable dashboard",
-      callback: () => void this.activateDashboard()
-    });
-    this.addCommand({
       id: "pull-all",
       name: "Pull everything back from reMarkable",
       checkCallback: (checking) => {
@@ -22788,35 +22783,73 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
         return true;
       }
     });
-    this.ribbonEl = this.addRibbonIcon("tablet", "reMarkable: send or pull the active note", () => {
-      const file = this.app.workspace.getActiveFile();
-      if (!file) {
-        new import_obsidian.Notice("Open a note first, or use the reMarkable dashboard.");
-        return;
-      }
-      const out = this.checkoutForFile(file);
-      void (out ? this.pullNote(file) : this.sendNote(file));
-    });
-    this.addRibbonIcon("gallery-thumbnails", "reMarkable dashboard", () => void this.activateDashboard());
+    this.ribbonEl = this.addRibbonIcon("tablet", "reMarkable", (evt) => this.openMenu(evt));
     this.statusEl = this.addStatusBarItem();
     this.statusEl.addClass("mod-clickable");
-    this.statusEl.onclick = () => void this.activateDashboard();
+    this.statusEl.onclick = (evt) => this.openMenu(evt);
     this.updateStatus();
-    this.registerView(DASHBOARD_VIEW, (leaf) => new DashboardView(leaf, this));
     this.addSettingTab(new BridgeSettingTab(this.app, this));
     this.startWatcher();
-    this.app.workspace.onLayoutReady(() => this.refreshBanners());
+    this.app.workspace.onLayoutReady(() => {
+      this.app.workspace.detachLeavesOfType(DASHBOARD_VIEW);
+      this.refreshBanners();
+    });
   }
-  async activateDashboard() {
-    const existing = this.app.workspace.getLeavesOfType(DASHBOARD_VIEW);
-    if (existing.length) {
-      this.app.workspace.revealLeaf(existing[0]);
-      return;
+  /** The reMarkable menu: everything in one dropdown, nothing persistent. */
+  openMenu(evt) {
+    const menu = new import_obsidian.Menu();
+    const file = this.app.workspace.getActiveFile();
+    if (file && (file.extension === "md" || file.extension === "pdf")) {
+      const out = this.checkoutForFile(file);
+      if (file.extension === "md") {
+        menu.addItem(
+          (i) => i.setTitle(out ? `Pull "${file.basename}" back` : `Send "${file.basename}" to reMarkable`).setIcon(out ? "download" : "upload").onClick(() => void (out ? this.pullNote(file) : this.sendNote(file)))
+        );
+      } else {
+        menu.addItem(
+          (i) => i.setTitle(out ? `Pull annotations of "${file.basename}"` : `Send "${file.basename}" to reMarkable`).setIcon(out ? "download" : "upload").onClick(() => void (out ? this.pullHighlights(file) : this.sendPdf(file)))
+        );
+      }
+      menu.addSeparator();
     }
-    const leaf = this.app.workspace.getRightLeaf(false);
-    if (!leaf) return;
-    await leaf.setViewState({ type: DASHBOARD_VIEW, active: true });
-    this.app.workspace.revealLeaf(leaf);
+    const outs = Object.values(this.settings.checkouts).filter((c) => !file || c.path !== file.path);
+    for (const c of outs.slice(0, 8)) {
+      const changed = this.changedDocs.has(c.docId);
+      const name = c.path.split("/").pop() ?? c.path;
+      menu.addItem(
+        (i) => i.setTitle(changed ? `${name} \u2014 ready to pull` : `${name} \u2014 on the device`).setIcon(changed ? "download" : "clock").onClick(() => {
+          const f = this.app.vault.getFileByPath(c.path);
+          if (f) void this.pullNote(f);
+        })
+      );
+    }
+    if (Object.keys(this.settings.checkouts).length > 1) {
+      menu.addItem(
+        (i) => i.setTitle(`Pull everything back (${Object.keys(this.settings.checkouts).length})`).setIcon("download-cloud").onClick(() => {
+          void (async () => {
+            for (const c of Object.values(this.settings.checkouts)) {
+              const f = this.app.vault.getFileByPath(c.path);
+              if (f) await this.pullNote(f);
+            }
+          })();
+        })
+      );
+    }
+    if (outs.length || Object.keys(this.settings.checkouts).length > 1) menu.addSeparator();
+    menu.addItem(
+      (i) => i.setTitle("Import from reMarkable\u2026").setIcon("import").onClick(async () => {
+        const waiting = new import_obsidian.Notice("Reading device library\u2026", 0);
+        try {
+          const snap = await this.store().snapshot();
+          new ImportModal(this.app, this, snap).open();
+        } catch (e) {
+          new import_obsidian.Notice(`Cannot read the reMarkable store: ${e instanceof Error ? e.message : e}`, 8e3);
+        } finally {
+          waiting.hide();
+        }
+      })
+    );
+    menu.showAtMouseEvent(evt);
   }
   updateStatus() {
     if (!this.statusEl) return;
@@ -22825,10 +22858,6 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     this.statusEl.setText(n === 0 ? "rM: idle" : changed ? `rM: ${n} out, ${changed} ready` : `rM: ${n} out`);
   }
   refreshDashboards() {
-    for (const leaf of this.app.workspace.getLeavesOfType(DASHBOARD_VIEW)) {
-      const view = leaf.view;
-      if (view instanceof DashboardView) view.render();
-    }
     this.updateStatus();
   }
   onunload() {
@@ -23193,102 +23222,6 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
       release.onclick = () => void this.forceRelease(file);
       const header = view.containerEl.querySelector(".view-header");
       header?.insertAdjacentElement("afterend", banner);
-    }
-  }
-};
-var DashboardView = class extends import_obsidian.ItemView {
-  constructor(leaf, plugin) {
-    super(leaf);
-    this.plugin = plugin;
-    this.renderQueued = false;
-    this.lastRender = 0;
-  }
-  getViewType() {
-    return DASHBOARD_VIEW;
-  }
-  getDisplayText() {
-    return "reMarkable";
-  }
-  getIcon() {
-    return "tablet";
-  }
-  async onOpen() {
-    void this.renderNow();
-  }
-  /** Rate-limited render; the library listing is async and cached. */
-  render() {
-    if (this.renderQueued) return;
-    const hidden = !(this.containerEl.isShown?.() ?? true);
-    const wait = Math.max(0, 3e3 - (Date.now() - this.lastRender));
-    if (!hidden && wait === 0) {
-      void this.renderNow();
-      return;
-    }
-    this.renderQueued = true;
-    window.setTimeout(() => {
-      this.renderQueued = false;
-      if (this.containerEl.isShown?.() ?? true) void this.renderNow();
-    }, wait || 1e3);
-  }
-  async renderNow() {
-    this.lastRender = Date.now();
-    const el = this.contentEl;
-    el.empty();
-    el.addClass("rm-bridge-dashboard");
-    el.createEl("h5", { text: "Checked out to the device" });
-    const outs = Object.values(this.plugin.settings.checkouts);
-    if (!outs.length) el.createDiv({ text: "Nothing checked out.", cls: "rm-bridge-dash-empty" });
-    for (const c of outs) {
-      const row = el.createDiv({ cls: "rm-bridge-dash-row" });
-      const info = row.createDiv();
-      info.createDiv({ text: c.path, cls: "rm-bridge-dash-name" });
-      const changed = this.plugin.changedDocs.has(c.docId);
-      info.createDiv({
-        text: changed ? "Edited on the device; ready to pull" : `Sent ${new Date(c.sentAt).toLocaleString()}`,
-        cls: changed ? "rm-bridge-dash-ready" : "rm-bridge-dash-sub"
-      });
-      const pull = row.createEl("button", { text: "Pull" });
-      pull.onclick = () => {
-        const file = this.plugin.app.vault.getFileByPath(c.path);
-        if (file) void this.plugin.pullNote(file);
-      };
-    }
-    const status = el.createDiv({ cls: "rm-bridge-dash-status" });
-    status.createSpan({ text: "Reading device library\u2026" });
-    const listEl = el.createDiv();
-    const store = this.plugin.store();
-    let snap;
-    try {
-      snap = await store.snapshot();
-    } catch (e) {
-      status.empty();
-      (0, import_obsidian.setIcon)(status.createSpan(), "alert-circle");
-      status.createSpan({ text: ` ${e instanceof Error ? e.message : e}` });
-      return;
-    }
-    if (!el.isConnected) return;
-    status.empty();
-    (0, import_obsidian.setIcon)(status.createSpan(), "check-circle");
-    status.createSpan({ text: ` Desktop app store: ${snap.documents} documents` });
-    listEl.createEl("h5", { text: "On the device" });
-    const outIds = new Set(outs.map((c) => c.docId));
-    for (const d of snap.docs.slice(0, 30)) {
-      if (outIds.has(d.id)) continue;
-      const row = listEl.createDiv({ cls: "rm-bridge-dash-row" });
-      const info = row.createDiv();
-      info.createDiv({ text: d.name, cls: "rm-bridge-dash-name" });
-      const folder = snap.folders.get(d.parent) ?? "";
-      info.createDiv({
-        text: `${d.fileType === "pdf" ? "PDF \xB7 " : d.fileType === "epub" ? "EPUB \xB7 " : ""}${folder ? folder + " \xB7 " : ""}${new Date(d.lastModified).toLocaleDateString()}`,
-        cls: "rm-bridge-dash-sub"
-      });
-      if (d.fileType === "pdf") {
-        const imp = row.createEl("button", { text: "Import PDF" });
-        imp.onclick = () => void this.plugin.importPdf(d.id, d.name);
-      } else if (d.fileType === "notebook" || d.fileType === "") {
-        const imp = row.createEl("button", { text: "Import" });
-        imp.onclick = () => void this.plugin.importDocument(d.id, d.name);
-      }
     }
   }
 };
