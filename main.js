@@ -22616,6 +22616,11 @@ ${numbered}`;
 }
 
 // src/main.ts
+function bodyHash(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = (h << 5) + h + s.charCodeAt(i) | 0;
+  return String(h >>> 0);
+}
 var DEFAULT_SETTINGS = {
   storePath: "",
   deviceFolder: "Obsidian",
@@ -22701,13 +22706,17 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
         }
       })
     );
+    let lastLockNotice = 0;
     this.registerEditorExtension(
       import_state.EditorState.transactionFilter.of((tr) => {
         if (!tr.docChanged || !this.settings.lockWhileOut) return tr;
         const info = tr.startState.field(import_obsidian.editorInfoField, false);
         const file = info?.file;
         if (file && this.checkoutForFile(file)) {
-          new import_obsidian.Notice("This note is on your reMarkable. Pull it back to edit here.");
+          if (Date.now() - lastLockNotice > 2e3) {
+            lastLockNotice = Date.now();
+            new import_obsidian.Notice("This note is on your reMarkable. Pull it back to edit here.");
+          }
           return [];
         }
         return tr;
@@ -22788,7 +22797,9 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
   }
   onunload() {
     this.stopWatch?.();
-    for (const el of document.querySelectorAll(".rm-bridge-banner")) el.remove();
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      leaf.view.containerEl.querySelector(".rm-bridge-banner")?.remove();
+    }
   }
   startWatcher() {
     this.stopWatch?.();
@@ -22813,6 +22824,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
         link.onclick = () => {
           const file = this.app.vault.getFileByPath(c.path);
           if (file) void this.pullNote(file);
+          else new import_obsidian.Notice(`"${c.path}" no longer exists in the vault. Import it from the dashboard instead.`, 8e3);
           notice.hide();
         };
         this.refreshBannersSoon();
@@ -22839,7 +22851,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
       const { paragraphs, stash } = markdownToDevice(body, this.settings.appendCheatSheet);
       const folderId = await store.ensureFolder(this.settings.deviceFolder);
       const docId = await store.createTextDocument(file.basename, folderId, [paragraphs]);
-      this.settings.checkouts[docId] = { docId, path: file.path, stash, sentAt: Date.now() };
+      this.settings.checkouts[docId] = { docId, path: file.path, stash, sentAt: Date.now(), sentHash: bodyHash(body) };
       await this.saveData(this.settings);
       await this.app.fileManager.processFrontMatter(file, (fm) => {
         fm[FM_ID] = docId;
@@ -22878,8 +22890,18 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
       const { markdown, warnings: pullWarnings } = deviceToMarkdown(paragraphs, checkout.stash);
       warnings.push(...pullWarnings);
       const raw = await this.app.vault.read(file);
-      const { fm } = this.splitFrontmatter(raw);
-      await this.app.vault.modify(file, fm + markdown);
+      const { fm, body } = this.splitFrontmatter(raw);
+      if (checkout.sentHash !== void 0 && bodyHash(body) !== checkout.sentHash) {
+        const conflictPath = file.path.replace(/\.md$/, " (from reMarkable).md");
+        const existing = this.app.vault.getFileByPath(conflictPath);
+        if (existing) await this.app.vault.process(existing, () => markdown);
+        else await this.app.vault.create(conflictPath, markdown);
+        warnings.push(
+          `"${file.name}" was edited in the vault while checked out (another plugin or sync?). The reMarkable version was saved as "${conflictPath}" instead of overwriting.`
+        );
+      } else {
+        await this.app.vault.process(file, () => fm + markdown);
+      }
       await this.app.fileManager.processFrontMatter(file, (front) => {
         delete front[FM_ID];
       });
@@ -23026,7 +23048,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
       }
       const folder = (0, import_obsidian.normalizePath)(this.settings.importFolder || "reMarkable imports");
       if (!this.app.vault.getFolderByPath(folder)) await this.app.vault.createFolder(folder);
-      const safeName = name.replace(/\.pdf$/i, "").replace(/[\\/:*?"<>|]/g, "-");
+      const safeName = name.replace(/\.pdf$/i, "").replace(/[\\/:*?"<>|]/g, "-").trim() || "Untitled";
       let target = (0, import_obsidian.normalizePath)(`${folder}/${safeName}.pdf`);
       for (let i = 2; this.app.vault.getFileByPath(target); i++) {
         target = (0, import_obsidian.normalizePath)(`${folder}/${safeName} ${i}.pdf`);
@@ -23069,7 +23091,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
       const { markdown, warnings } = deviceToMarkdown(paragraphs, []);
       const folder = (0, import_obsidian.normalizePath)(this.settings.importFolder || "reMarkable imports");
       if (!this.app.vault.getFolderByPath(folder)) await this.app.vault.createFolder(folder);
-      const safeName = name.replace(/[\\/:*?"<>|]/g, "-");
+      const safeName = name.replace(/[\\/:*?"<>|]/g, "-").trim() || "Untitled";
       let target = (0, import_obsidian.normalizePath)(`${folder}/${safeName}.md`);
       for (let i = 2; this.app.vault.getFileByPath(target); i++) {
         target = (0, import_obsidian.normalizePath)(`${folder}/${safeName} ${i}.md`);
@@ -23186,7 +23208,7 @@ var DashboardView = class extends import_obsidian.ItemView {
       status.createSpan({ text: ` ${e instanceof Error ? e.message : e}` });
       return;
     }
-    if (this.lastRender !== Date.now() && !el.isConnected) return;
+    if (!el.isConnected) return;
     status.empty();
     (0, import_obsidian.setIcon)(status.createSpan(), "check-circle");
     status.createSpan({ text: ` Desktop app store: ${snap.documents} documents` });

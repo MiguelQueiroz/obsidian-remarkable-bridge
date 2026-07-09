@@ -24,6 +24,15 @@ interface Checkout {
   stash: string[];
   sentAt: number;
   kind?: "note" | "pdf";
+  /** Hash of the note body at send time, to detect out-of-band edits. */
+  sentHash?: string;
+}
+
+/** djb2; enough to detect that a body changed underneath a checkout. */
+function bodyHash(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return String(h >>> 0);
 }
 
 interface BridgeSettings {
@@ -140,13 +149,17 @@ export default class RemarkableBridge extends Plugin {
     );
 
     // Block edits to checked-out notes.
+    let lastLockNotice = 0;
     this.registerEditorExtension(
       EditorState.transactionFilter.of((tr) => {
         if (!tr.docChanged || !this.settings.lockWhileOut) return tr;
         const info = tr.startState.field(editorInfoField, false);
         const file = info?.file;
         if (file && this.checkoutForFile(file)) {
-          new Notice("This note is on your reMarkable. Pull it back to edit here.");
+          if (Date.now() - lastLockNotice > 2000) {
+            lastLockNotice = Date.now();
+            new Notice("This note is on your reMarkable. Pull it back to edit here.");
+          }
           return [];
         }
         return tr;
@@ -239,7 +252,9 @@ export default class RemarkableBridge extends Plugin {
 
   onunload() {
     this.stopWatch?.();
-    for (const el of document.querySelectorAll(".rm-bridge-banner")) el.remove();
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      leaf.view.containerEl.querySelector(".rm-bridge-banner")?.remove();
+    }
   }
 
   private startWatcher() {
@@ -265,6 +280,7 @@ export default class RemarkableBridge extends Plugin {
         link.onclick = () => {
           const file = this.app.vault.getFileByPath(c.path);
           if (file) void this.pullNote(file);
+          else new Notice(`"${c.path}" no longer exists in the vault. Import it from the dashboard instead.`, 8000);
           notice.hide();
         };
         this.refreshBannersSoon();
@@ -295,7 +311,7 @@ export default class RemarkableBridge extends Plugin {
       const folderId = await store.ensureFolder(this.settings.deviceFolder);
       const docId = await store.createTextDocument(file.basename, folderId, [paragraphs]);
 
-      this.settings.checkouts[docId] = { docId, path: file.path, stash, sentAt: Date.now() };
+      this.settings.checkouts[docId] = { docId, path: file.path, stash, sentAt: Date.now(), sentHash: bodyHash(body) };
       await this.saveData(this.settings);
       await this.app.fileManager.processFrontMatter(file, (fm) => {
         fm[FM_ID] = docId;
@@ -336,8 +352,22 @@ export default class RemarkableBridge extends Plugin {
       warnings.push(...pullWarnings);
 
       const raw = await this.app.vault.read(file);
-      const { fm } = this.splitFrontmatter(raw);
-      await this.app.vault.modify(file, fm + markdown);
+      const { fm, body } = this.splitFrontmatter(raw);
+
+      // The editor lock can't stop vault-level writers (sync plugins, git).
+      // If the note changed underneath the checkout, keep both versions.
+      if (checkout.sentHash !== undefined && bodyHash(body) !== checkout.sentHash) {
+        const conflictPath = file.path.replace(/\.md$/, " (from reMarkable).md");
+        const existing = this.app.vault.getFileByPath(conflictPath);
+        if (existing) await this.app.vault.process(existing, () => markdown);
+        else await this.app.vault.create(conflictPath, markdown);
+        warnings.push(
+          `"${file.name}" was edited in the vault while checked out (another plugin or sync?). ` +
+            `The reMarkable version was saved as "${conflictPath}" instead of overwriting.`
+        );
+      } else {
+        await this.app.vault.process(file, () => fm + markdown);
+      }
       await this.app.fileManager.processFrontMatter(file, (front) => {
         delete front[FM_ID];
       });
@@ -498,7 +528,7 @@ export default class RemarkableBridge extends Plugin {
       }
       const folder = normalizePath(this.settings.importFolder || "reMarkable imports");
       if (!this.app.vault.getFolderByPath(folder)) await this.app.vault.createFolder(folder);
-      const safeName = name.replace(/\.pdf$/i, "").replace(/[\\/:*?"<>|]/g, "-");
+      const safeName = name.replace(/\.pdf$/i, "").replace(/[\\/:*?"<>|]/g, "-").trim() || "Untitled";
       let target = normalizePath(`${folder}/${safeName}.pdf`);
       for (let i = 2; this.app.vault.getFileByPath(target); i++) {
         target = normalizePath(`${folder}/${safeName} ${i}.pdf`);
@@ -543,7 +573,7 @@ export default class RemarkableBridge extends Plugin {
       const { markdown, warnings } = deviceToMarkdown(paragraphs, []);
       const folder = normalizePath(this.settings.importFolder || "reMarkable imports");
       if (!this.app.vault.getFolderByPath(folder)) await this.app.vault.createFolder(folder);
-      const safeName = name.replace(/[\\/:*?"<>|]/g, "-");
+      const safeName = name.replace(/[\\/:*?"<>|]/g, "-").trim() || "Untitled";
       let target = normalizePath(`${folder}/${safeName}.md`);
       for (let i = 2; this.app.vault.getFileByPath(target); i++) {
         target = normalizePath(`${folder}/${safeName} ${i}.md`);
@@ -680,7 +710,7 @@ class DashboardView extends ItemView {
       status.createSpan({ text: ` ${e instanceof Error ? e.message : e}` });
       return;
     }
-    if (this.lastRender !== Date.now() && !el.isConnected) return;
+    if (!el.isConnected) return;
 
     status.empty();
     setIcon(status.createSpan(), "check-circle");
