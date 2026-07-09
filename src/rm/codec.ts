@@ -540,6 +540,61 @@ export function isV6(file: Uint8Array): boolean {
   return new TextDecoder().decode(file.subarray(0, HEADER_V6.length)) === HEADER_V6;
 }
 
+export interface Highlight {
+  text: string;
+  color: number;
+}
+
+/**
+ * Extract smart-highlight text (glyph ranges) from a page. These exist when
+ * the highlighter recognized text underneath, e.g. on a PDF.
+ */
+export function parseHighlights(file: Uint8Array): Highlight[] {
+  if (!isV6(file)) return [];
+  const highlights: Highlight[] = [];
+  for (const b of splitBlocks(file)) {
+    if (b.blockType !== BlockType.SceneGlyphItem) continue;
+    try {
+      const r = new Reader(b.payload);
+      r.tag(1, TagType.ID);
+      r.crdtId();
+      r.tag(2, TagType.ID);
+      r.crdtId();
+      r.tag(3, TagType.ID);
+      r.crdtId();
+      r.tag(4, TagType.ID);
+      r.crdtId();
+      r.tag(5, TagType.Byte4);
+      const deletedLength = r.u32();
+      if (deletedLength > 0 || !r.checkTag(6, TagType.Length4)) continue;
+      readSubblockBounded(r, 6, (r) => {
+        const itemType = r.u8();
+        if (itemType !== 0x01) return;
+        // GlyphRange: optional start(2)/length(3), color(4), text(5).
+        if (r.checkTag(2, TagType.Byte4)) {
+          r.tag(2, TagType.Byte4);
+          r.u32();
+        }
+        if (r.checkTag(3, TagType.Byte4)) {
+          r.tag(3, TagType.Byte4);
+          r.u32();
+        }
+        r.tag(4, TagType.Byte4);
+        const color = r.u32();
+        const text = readSubblockBounded(r, 5, (r) => {
+          const len = r.varuint();
+          r.u8();
+          return new TextDecoder().decode(r.bytes(len));
+        });
+        if (text.trim()) highlights.push({ text: text.trim(), color });
+      });
+    } catch {
+      continue;
+    }
+  }
+  return highlights;
+}
+
 export function parsePage(file: Uint8Array): ParsedPage {
   const warnings: string[] = [];
   if (!isV6(file)) {

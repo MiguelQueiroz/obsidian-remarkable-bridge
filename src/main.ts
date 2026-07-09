@@ -23,6 +23,7 @@ interface Checkout {
   path: string;
   stash: string[];
   sentAt: number;
+  kind?: "note" | "pdf";
 }
 
 interface BridgeSettings {
@@ -103,14 +104,32 @@ export default class RemarkableBridge extends Plugin {
 
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (!(file instanceof TFile) || file.extension !== "md") return;
-        const out = this.checkoutForFile(file);
-        menu.addItem((item) =>
-          item
-            .setTitle(out ? "Pull back from reMarkable" : "Send to reMarkable")
-            .setIcon("tablet")
-            .onClick(() => (out ? this.pullNote(file) : this.sendNote(file)))
-        );
+        if (!(file instanceof TFile)) return;
+        if (file.extension === "md") {
+          const out = this.checkoutForFile(file);
+          menu.addItem((item) =>
+            item
+              .setTitle(out ? "Pull back from reMarkable" : "Send to reMarkable")
+              .setIcon("tablet")
+              .onClick(() => (out ? this.pullNote(file) : this.sendNote(file)))
+          );
+        } else if (file.extension === "pdf") {
+          const out = this.checkoutForFile(file);
+          menu.addItem((item) =>
+            item
+              .setTitle(out ? "Pull highlights from reMarkable" : "Send PDF to reMarkable")
+              .setIcon("tablet")
+              .onClick(() => (out ? this.pullHighlights(file) : this.sendPdf(file)))
+          );
+          if (out) {
+            menu.addItem((item) =>
+              item
+                .setTitle("Stop tracking on reMarkable")
+                .setIcon("tablet-x")
+                .onClick(() => this.forceRelease(file))
+            );
+          }
+        }
       })
     );
 
@@ -280,6 +299,10 @@ export default class RemarkableBridge extends Plugin {
   async pullNote(file: TFile) {
     const checkout = this.checkoutForFile(file);
     if (!checkout) return;
+    if (checkout.kind === "pdf") {
+      await this.pullHighlights(file);
+      return;
+    }
     try {
       const store = this.store();
       if (!store.docExists(checkout.docId)) {
@@ -328,7 +351,8 @@ export default class RemarkableBridge extends Plugin {
     const checkout = this.checkoutForFile(file);
     if (!checkout) return;
     const store = this.store();
-    if (store.docExists(checkout.docId)) {
+    // PDFs are only untracked; their device copy (with annotations) is kept.
+    if (checkout.kind !== "pdf" && store.docExists(checkout.docId)) {
       try {
         store.trashDocument(checkout.docId);
       } catch (e) {
@@ -342,7 +366,11 @@ export default class RemarkableBridge extends Plugin {
       delete front[FM_ID];
     });
     this.refreshBannersSoon();
-    new Notice(`Released "${file.basename}". The device copy was moved to the reMarkable trash.`);
+    new Notice(
+      checkout.kind === "pdf"
+        ? `Stopped tracking "${file.basename}". The device copy and its annotations were kept.`
+        : `Released "${file.basename}". The device copy was moved to the reMarkable trash.`
+    );
   }
 
   /* ---------------------------------------------------------------- */
@@ -355,6 +383,110 @@ export default class RemarkableBridge extends Plugin {
     this.refreshDashboards();
     window.setTimeout(() => this.refreshBanners(), 400);
     window.setTimeout(() => this.refreshBanners(), 1200);
+  }
+
+  /** Send a vault PDF to the device for reading and annotation. */
+  async sendPdf(file: TFile) {
+    try {
+      const store = this.store();
+      const check = store.verify();
+      if (!check.ok) {
+        new Notice(`reMarkable bridge: ${check.reason}`, 10000);
+        return;
+      }
+      const bytes = new Uint8Array(await this.app.vault.readBinary(file));
+      const { PDFDocument } = await import("pdf-lib");
+      const pdf = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
+      const pageCount = pdf.getPageCount();
+      const folderId = store.ensureFolder(this.settings.deviceFolder);
+      const docId = store.createPdfDocument(file.basename, folderId, bytes, pageCount);
+      this.settings.checkouts[docId] = { docId, path: file.path, stash: [], sentAt: Date.now(), kind: "pdf" };
+      await this.saveData(this.settings);
+      this.startWatcher();
+      this.refreshBannersSoon();
+      new Notice(`Sent "${file.basename}" (${pageCount} pages) to reMarkable. Highlight there, then pull highlights here.`);
+    } catch (e) {
+      new Notice(`Send failed: ${e instanceof Error ? e.message : e}`, 10000);
+      if (!(e instanceof StoreError)) console.error(e);
+    }
+  }
+
+  /** Extract device highlights of a tracked PDF into a companion note. */
+  async pullHighlights(file: TFile) {
+    const checkout = this.checkoutForFile(file);
+    if (!checkout) return;
+    try {
+      const store = this.store();
+      if (!store.docExists(checkout.docId)) {
+        new Notice("The reMarkable copy no longer exists. Use 'Stop tracking' to unlink.", 10000);
+        return;
+      }
+      const perPage = store.readHighlights(checkout.docId);
+      if (!perPage.length) {
+        new Notice(
+          "No text highlights found. On the device, use the highlighter on PDF text; plain ink is not converted.",
+          10000
+        );
+        return;
+      }
+      const lines: string[] = [`Highlights from [[${file.name}]], pulled ${new Date().toLocaleString()}.`, ""];
+      for (const { page, highlights } of perPage) {
+        lines.push(`## Page ${page}`, "");
+        for (const h of highlights) lines.push(`> ${h.text}`, "");
+      }
+      const target = file.path.replace(/\.pdf$/i, " highlights.md");
+      const existing = this.app.vault.getFileByPath(target);
+      if (existing) await this.app.vault.modify(existing, lines.join("\n"));
+      else await this.app.vault.create(target, lines.join("\n"));
+      this.changedDocs.delete(checkout.docId);
+      this.refreshDashboards();
+      const total = perPage.reduce((n, p) => n + p.highlights.length, 0);
+      new Notice(`Pulled ${total} highlights to "${target}". The PDF stays on the device for more.`);
+      const note = this.app.vault.getFileByPath(target);
+      if (note) await this.app.workspace.getLeaf().openFile(note);
+    } catch (e) {
+      new Notice(`Pull failed: ${e instanceof Error ? e.message : e}`, 10000);
+      console.error(e);
+    }
+  }
+
+  /** Import a device PDF (and its highlights) into the vault. */
+  async importPdf(docId: string, name: string) {
+    try {
+      const store = this.store();
+      const bytes = store.readPdfBytes(docId);
+      if (!bytes) {
+        new Notice(`No PDF file found for "${name}".`, 8000);
+        return;
+      }
+      const folder = normalizePath(this.settings.importFolder || "reMarkable imports");
+      if (!this.app.vault.getFolderByPath(folder)) await this.app.vault.createFolder(folder);
+      const safeName = name.replace(/\.pdf$/i, "").replace(/[\\/:*?"<>|]/g, "-");
+      let target = normalizePath(`${folder}/${safeName}.pdf`);
+      for (let i = 2; this.app.vault.getFileByPath(target); i++) {
+        target = normalizePath(`${folder}/${safeName} ${i}.pdf`);
+      }
+      const pdfFile = await this.app.vault.createBinary(target, bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
+
+      const perPage = store.readHighlights(docId);
+      if (perPage.length) {
+        const lines: string[] = [`Highlights from [[${pdfFile.name}]], imported ${new Date().toLocaleString()}.`, ""];
+        for (const { page, highlights } of perPage) {
+          lines.push(`## Page ${page}`, "");
+          for (const h of highlights) lines.push(`> ${h.text}`, "");
+        }
+        await this.app.vault.create(target.replace(/\.pdf$/i, " highlights.md"), lines.join("\n"));
+      }
+      await this.app.workspace.getLeaf().openFile(pdfFile);
+      new Notice(
+        perPage.length
+          ? `Imported "${name}" with a highlights note.`
+          : `Imported "${name}". No text highlights found on it. Ink annotations are not rendered (yet).`
+      );
+    } catch (e) {
+      new Notice(`Import failed: ${e instanceof Error ? e.message : e}`, 10000);
+      console.error(e);
+    }
   }
 
   /** Import any device document's typed text as a new vault note. */
@@ -483,11 +615,16 @@ class DashboardView extends ItemView {
         info.createDiv({ text: d.name, cls: "rm-bridge-dash-name" });
         const folder = store.folderName(d.parent);
         info.createDiv({
-          text: `${folder ? folder + " · " : ""}${new Date(d.lastModified).toLocaleDateString()}`,
+          text: `${d.fileType === "pdf" ? "PDF · " : d.fileType === "epub" ? "EPUB · " : ""}${folder ? folder + " · " : ""}${new Date(d.lastModified).toLocaleDateString()}`,
           cls: "rm-bridge-dash-sub",
         });
-        const imp = row.createEl("button", { text: "Import" });
-        imp.onclick = () => void this.plugin.importDocument(d.id, d.name);
+        if (d.fileType === "pdf") {
+          const imp = row.createEl("button", { text: "Import PDF" });
+          imp.onclick = () => void this.plugin.importPdf(d.id, d.name);
+        } else if (d.fileType === "notebook" || d.fileType === "") {
+          const imp = row.createEl("button", { text: "Import" });
+          imp.onclick = () => void this.plugin.importDocument(d.id, d.name);
+        }
       }
     }
   }
@@ -497,24 +634,26 @@ class DashboardView extends ItemView {
 /* Import picker                                                       */
 /* ------------------------------------------------------------------ */
 
-class ImportModal extends FuzzySuggestModal<{ id: string; name: string; parent: string }> {
+class ImportModal extends FuzzySuggestModal<{ id: string; name: string; parent: string; fileType: string }> {
   constructor(app: App, private plugin: RemarkableBridge) {
     super(app);
-    this.setPlaceholder("Import a reMarkable document as a note…");
+    this.setPlaceholder("Import a reMarkable document…");
   }
   getItems() {
     try {
-      return this.plugin.store().listDocuments();
+      return this.plugin.store().listDocuments().filter((d) => d.fileType === "pdf" || d.fileType === "notebook" || d.fileType === "");
     } catch {
       return [];
     }
   }
-  getItemText(item: { name: string; parent: string }) {
+  getItemText(item: { name: string; parent: string; fileType: string }) {
     const folder = this.plugin.store().folderName(item.parent);
-    return folder ? `${folder}/${item.name}` : item.name;
+    const prefix = item.fileType === "pdf" ? "[PDF] " : "";
+    return prefix + (folder ? `${folder}/${item.name}` : item.name);
   }
-  onChooseItem(item: { id: string; name: string }) {
-    void this.plugin.importDocument(item.id, item.name);
+  onChooseItem(item: { id: string; name: string; fileType: string }) {
+    if (item.fileType === "pdf") void this.plugin.importPdf(item.id, item.name);
+    else void this.plugin.importDocument(item.id, item.name);
   }
 }
 

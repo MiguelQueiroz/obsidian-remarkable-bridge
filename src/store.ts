@@ -11,7 +11,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { randomUUID } from "crypto";
-import { buildTextPage, parsePage, OutParagraph, ParsedPage } from "./rm/codec";
+import { buildTextPage, parsePage, parseHighlights, Highlight, OutParagraph, ParsedPage } from "./rm/codec";
 
 export interface DocMetadata {
   visibleName: string;
@@ -175,24 +175,114 @@ export class RemarkableStore {
   }
 
   /** List documents (not folders) in the store, newest first. */
-  listDocuments(): { id: string; name: string; parent: string; lastModified: number }[] {
-    const docs: { id: string; name: string; parent: string; lastModified: number }[] = [];
+  listDocuments(): { id: string; name: string; parent: string; lastModified: number; fileType: string }[] {
+    const docs: { id: string; name: string; parent: string; lastModified: number; fileType: string }[] = [];
     for (const f of fs.readdirSync(this.root)) {
       if (!f.endsWith(".metadata")) continue;
       try {
         const meta = JSON.parse(fs.readFileSync(path.join(this.root, f), "utf8"));
         if (meta.type !== "DocumentType" || meta.deleted || meta.parent === "trash") continue;
+        const id = f.slice(0, -".metadata".length);
+        let fileType = "notebook";
+        try {
+          fileType = JSON.parse(fs.readFileSync(path.join(this.root, `${id}.content`), "utf8")).fileType ?? "notebook";
+        } catch {
+          // Missing content file; treat as notebook.
+        }
         docs.push({
-          id: f.slice(0, -".metadata".length),
+          id,
           name: meta.visibleName,
           parent: meta.parent ?? "",
           lastModified: parseInt(meta.lastModified, 10) || 0,
+          fileType,
         });
       } catch {
         continue;
       }
     }
     return docs.sort((a, b) => b.lastModified - a.lastModified);
+  }
+
+  /** Create a PDF document on the device from raw bytes. */
+  createPdfDocument(name: string, parentId: string, pdf: Uint8Array, pageCount: number): string {
+    const check = this.verify();
+    if (!check.ok) throw new StoreError(check.reason);
+
+    const docId = randomUUID();
+    fs.mkdirSync(path.join(this.root, docId));
+    fs.writeFileSync(path.join(this.root, `${docId}.pdf`), pdf);
+
+    const pageIds = Array.from({ length: pageCount }, () => randomUUID());
+    const content = {
+      coverPageNumber: -1,
+      documentMetadata: {},
+      dummyDocument: false,
+      extraMetadata: {},
+      fileType: "pdf",
+      fontName: "",
+      formatVersion: 1,
+      lastOpenedPage: 0,
+      lineHeight: -1,
+      margins: 180,
+      orientation: "portrait",
+      originalPageCount: pageCount,
+      pageCount,
+      pageTags: [],
+      pages: pageIds,
+      redirectionPageMap: Array.from({ length: pageCount }, (_, i) => i),
+      sizeInBytes: String(pdf.length),
+      tags: [],
+      textAlignment: "justify",
+      textScale: 1,
+      zoomMode: "bestFit",
+    };
+    const now = String(Date.now());
+    fs.writeFileSync(path.join(this.root, `${docId}.content`), JSON.stringify(content, null, 4));
+    fs.writeFileSync(path.join(this.root, `${docId}.local`), JSON.stringify({ contentFormatVersion: 1 }, null, 4));
+    fs.writeFileSync(path.join(this.root, `${docId}.pagedata`), "Blank\n".repeat(pageCount));
+    this.writeMetadata(docId, {
+      createdTime: now,
+      deleted: false,
+      lastModified: now,
+      lastOpened: "0",
+      lastOpenedPage: 0,
+      metadatamodified: false,
+      modified: false,
+      new: false,
+      parent: parentId,
+      pinned: false,
+      source: "",
+      synced: false,
+      type: "DocumentType",
+      version: 0,
+      visibleName: name,
+    } as DocMetadata & Record<string, unknown>);
+    return docId;
+  }
+
+  readPdfBytes(docId: string): Uint8Array | null {
+    const p = path.join(this.root, `${docId}.pdf`);
+    return fs.existsSync(p) ? fs.readFileSync(p) : null;
+  }
+
+  /** Extract smart highlights per page, in page order (1-based page numbers). */
+  readHighlights(docId: string): { page: number; highlights: Highlight[] }[] {
+    const content = JSON.parse(fs.readFileSync(path.join(this.root, `${docId}.content`), "utf8"));
+    const pageIds: string[] =
+      content.cPages?.pages?.map((p: { id: string }) => p.id) ?? content.pages ?? [];
+    const redirect: number[] | undefined = content.redirectionPageMap;
+    const out: { page: number; highlights: Highlight[] }[] = [];
+    pageIds.forEach((pid, i) => {
+      const rmPath = path.join(this.root, docId, `${pid}.rm`);
+      if (!fs.existsSync(rmPath)) return;
+      try {
+        const highlights = parseHighlights(fs.readFileSync(rmPath));
+        if (highlights.length) out.push({ page: (redirect?.[i] ?? i) + 1, highlights });
+      } catch {
+        // Ignore unreadable pages; highlights are best-effort.
+      }
+    });
+    return out;
   }
 
   /** Resolve a folder id to its visible name ("" for the root). */
