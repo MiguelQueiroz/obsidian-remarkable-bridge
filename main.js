@@ -20071,7 +20071,7 @@ var init_PDFPage = __esm({
     init_utils2();
     PDFPage = /** @class */
     function() {
-      function PDFPage2(leafNode, ref, doc) {
+      function PDFPage3(leafNode, ref, doc) {
         this.fontSize = 24;
         this.fontColor = rgb(0, 0, 0);
         this.lineHeight = 24;
@@ -20084,16 +20084,16 @@ var init_PDFPage = __esm({
         this.ref = ref;
         this.doc = doc;
       }
-      PDFPage2.prototype.setRotation = function(angle) {
+      PDFPage3.prototype.setRotation = function(angle) {
         var degreesAngle = toDegrees(angle);
         assertMultiple(degreesAngle, "degreesAngle", 90);
         this.node.set(PDFName_default.of("Rotate"), this.doc.context.obj(degreesAngle));
       };
-      PDFPage2.prototype.getRotation = function() {
+      PDFPage3.prototype.getRotation = function() {
         var Rotate = this.node.Rotate();
         return degrees(Rotate ? Rotate.asNumber() : 0);
       };
-      PDFPage2.prototype.setSize = function(width, height) {
+      PDFPage3.prototype.setSize = function(width, height) {
         assertIs(width, "width", ["number"]);
         assertIs(height, "height", ["number"]);
         var mediaBox = this.getMediaBox();
@@ -20119,15 +20119,15 @@ var init_PDFPage = __esm({
           this.setArtBox(mediaBox.x, mediaBox.y, width, height);
         }
       };
-      PDFPage2.prototype.setWidth = function(width) {
+      PDFPage3.prototype.setWidth = function(width) {
         assertIs(width, "width", ["number"]);
         this.setSize(width, this.getSize().height);
       };
-      PDFPage2.prototype.setHeight = function(height) {
+      PDFPage3.prototype.setHeight = function(height) {
         assertIs(height, "height", ["number"]);
         this.setSize(this.getSize().width, height);
       };
-      PDFPage2.prototype.setMediaBox = function(x, y, width, height) {
+      PDFPage3.prototype.setMediaBox = function(x, y, width, height) {
         assertIs(x, "x", ["number"]);
         assertIs(y, "y", ["number"]);
         assertIs(width, "width", ["number"]);
@@ -20135,7 +20135,7 @@ var init_PDFPage = __esm({
         var mediaBox = this.doc.context.obj([x, y, x + width, y + height]);
         this.node.set(PDFName_default.MediaBox, mediaBox);
       };
-      PDFPage2.prototype.setCropBox = function(x, y, width, height) {
+      PDFPage3.prototype.setCropBox = function(x, y, width, height) {
         assertIs(x, "x", ["number"]);
         assertIs(y, "y", ["number"]);
         assertIs(width, "width", ["number"]);
@@ -20143,7 +20143,7 @@ var init_PDFPage = __esm({
         var cropBox = this.doc.context.obj([x, y, x + width, y + height]);
         this.node.set(PDFName_default.CropBox, cropBox);
       };
-      PDFPage2.prototype.setBleedBox = function(x, y, width, height) {
+      PDFPage3.prototype.setBleedBox = function(x, y, width, height) {
         assertIs(x, "x", ["number"]);
         assertIs(y, "y", ["number"]);
         assertIs(width, "width", ["number"]);
@@ -20151,7 +20151,7 @@ var init_PDFPage = __esm({
         var bleedBox = this.doc.context.obj([x, y, x + width, y + height]);
         this.node.set(PDFName_default.BleedBox, bleedBox);
       };
-      PDFPage2.prototype.setTrimBox = function(x, y, width, height) {
+      PDFPage3.prototype.setTrimBox = function(x, y, width, height) {
         assertIs(x, "x", ["number"]);
         assertIs(y, "y", ["number"]);
         assertIs(width, "width", ["number"]);
@@ -20159,7 +20159,7 @@ var init_PDFPage = __esm({
         var trimBox = this.doc.context.obj([x, y, x + width, y + height]);
         this.node.set(PDFName_default.TrimBox, trimBox);
       };
-      PDFPage2.prototype.setArtBox = function(x, y, width, height) {
+      PDFPage3.prototype.setArtBox = function(x, y, width, height) {
         assertIs(x, "x", ["number"]);
         assertIs(y, "y", ["number"]);
         assertIs(width, "width", ["number"]);
@@ -20167,41 +20167,41 @@ var init_PDFPage = __esm({
         var artBox = this.doc.context.obj([x, y, x + width, y + height]);
         this.node.set(PDFName_default.ArtBox, artBox);
       };
-      PDFPage2.prototype.getSize = function() {
+      PDFPage3.prototype.getSize = function() {
         var _a = this.getMediaBox(), width = _a.width, height = _a.height;
         return { width, height };
       };
-      PDFPage2.prototype.getWidth = function() {
+      PDFPage3.prototype.getWidth = function() {
         return this.getSize().width;
       };
-      PDFPage2.prototype.getHeight = function() {
+      PDFPage3.prototype.getHeight = function() {
         return this.getSize().height;
       };
-      PDFPage2.prototype.getMediaBox = function() {
+      PDFPage3.prototype.getMediaBox = function() {
         var mediaBox = this.node.MediaBox();
         return mediaBox.asRectangle();
       };
-      PDFPage2.prototype.getCropBox = function() {
+      PDFPage3.prototype.getCropBox = function() {
         var _a;
         var cropBox = this.node.CropBox();
         return (_a = cropBox === null || cropBox === void 0 ? void 0 : cropBox.asRectangle()) !== null && _a !== void 0 ? _a : this.getMediaBox();
       };
-      PDFPage2.prototype.getBleedBox = function() {
+      PDFPage3.prototype.getBleedBox = function() {
         var _a;
         var bleedBox = this.node.BleedBox();
         return (_a = bleedBox === null || bleedBox === void 0 ? void 0 : bleedBox.asRectangle()) !== null && _a !== void 0 ? _a : this.getCropBox();
       };
-      PDFPage2.prototype.getTrimBox = function() {
+      PDFPage3.prototype.getTrimBox = function() {
         var _a;
         var trimBox = this.node.TrimBox();
         return (_a = trimBox === null || trimBox === void 0 ? void 0 : trimBox.asRectangle()) !== null && _a !== void 0 ? _a : this.getCropBox();
       };
-      PDFPage2.prototype.getArtBox = function() {
+      PDFPage3.prototype.getArtBox = function() {
         var _a;
         var artBox = this.node.ArtBox();
         return (_a = artBox === null || artBox === void 0 ? void 0 : artBox.asRectangle()) !== null && _a !== void 0 ? _a : this.getCropBox();
       };
-      PDFPage2.prototype.translateContent = function(x, y) {
+      PDFPage3.prototype.translateContent = function(x, y) {
         assertIs(x, "x", ["number"]);
         assertIs(y, "y", ["number"]);
         this.node.normalize();
@@ -20212,14 +20212,14 @@ var init_PDFPage = __esm({
         var endRef = this.doc.context.register(end);
         this.node.wrapContentStreams(startRef, endRef);
       };
-      PDFPage2.prototype.scale = function(x, y) {
+      PDFPage3.prototype.scale = function(x, y) {
         assertIs(x, "x", ["number"]);
         assertIs(y, "y", ["number"]);
         this.setSize(this.getWidth() * x, this.getHeight() * y);
         this.scaleContent(x, y);
         this.scaleAnnotations(x, y);
       };
-      PDFPage2.prototype.scaleContent = function(x, y) {
+      PDFPage3.prototype.scaleContent = function(x, y) {
         assertIs(x, "x", ["number"]);
         assertIs(y, "y", ["number"]);
         this.node.normalize();
@@ -20230,7 +20230,7 @@ var init_PDFPage = __esm({
         var endRef = this.doc.context.register(end);
         this.node.wrapContentStreams(startRef, endRef);
       };
-      PDFPage2.prototype.scaleAnnotations = function(x, y) {
+      PDFPage3.prototype.scaleAnnotations = function(x, y) {
         assertIs(x, "x", ["number"]);
         assertIs(y, "y", ["number"]);
         var annots = this.node.Annots();
@@ -20242,60 +20242,60 @@ var init_PDFPage = __esm({
             this.scaleAnnot(annot, x, y);
         }
       };
-      PDFPage2.prototype.resetPosition = function() {
+      PDFPage3.prototype.resetPosition = function() {
         this.getContentStream(false);
         this.x = 0;
         this.y = 0;
       };
-      PDFPage2.prototype.setFont = function(font) {
+      PDFPage3.prototype.setFont = function(font) {
         assertIs(font, "font", [[PDFFont_default, "PDFFont"]]);
         this.font = font;
         this.fontKey = this.node.newFontDictionary(this.font.name, this.font.ref);
       };
-      PDFPage2.prototype.setFontSize = function(fontSize) {
+      PDFPage3.prototype.setFontSize = function(fontSize) {
         assertIs(fontSize, "fontSize", ["number"]);
         this.fontSize = fontSize;
       };
-      PDFPage2.prototype.setFontColor = function(fontColor) {
+      PDFPage3.prototype.setFontColor = function(fontColor) {
         assertIs(fontColor, "fontColor", [[Object, "Color"]]);
         this.fontColor = fontColor;
       };
-      PDFPage2.prototype.setLineHeight = function(lineHeight) {
+      PDFPage3.prototype.setLineHeight = function(lineHeight) {
         assertIs(lineHeight, "lineHeight", ["number"]);
         this.lineHeight = lineHeight;
       };
-      PDFPage2.prototype.getPosition = function() {
+      PDFPage3.prototype.getPosition = function() {
         return { x: this.x, y: this.y };
       };
-      PDFPage2.prototype.getX = function() {
+      PDFPage3.prototype.getX = function() {
         return this.x;
       };
-      PDFPage2.prototype.getY = function() {
+      PDFPage3.prototype.getY = function() {
         return this.y;
       };
-      PDFPage2.prototype.moveTo = function(x, y) {
+      PDFPage3.prototype.moveTo = function(x, y) {
         assertIs(x, "x", ["number"]);
         assertIs(y, "y", ["number"]);
         this.x = x;
         this.y = y;
       };
-      PDFPage2.prototype.moveDown = function(yDecrease) {
+      PDFPage3.prototype.moveDown = function(yDecrease) {
         assertIs(yDecrease, "yDecrease", ["number"]);
         this.y -= yDecrease;
       };
-      PDFPage2.prototype.moveUp = function(yIncrease) {
+      PDFPage3.prototype.moveUp = function(yIncrease) {
         assertIs(yIncrease, "yIncrease", ["number"]);
         this.y += yIncrease;
       };
-      PDFPage2.prototype.moveLeft = function(xDecrease) {
+      PDFPage3.prototype.moveLeft = function(xDecrease) {
         assertIs(xDecrease, "xDecrease", ["number"]);
         this.x -= xDecrease;
       };
-      PDFPage2.prototype.moveRight = function(xIncrease) {
+      PDFPage3.prototype.moveRight = function(xIncrease) {
         assertIs(xIncrease, "xIncrease", ["number"]);
         this.x += xIncrease;
       };
-      PDFPage2.prototype.pushOperators = function() {
+      PDFPage3.prototype.pushOperators = function() {
         var operator = [];
         for (var _i = 0; _i < arguments.length; _i++) {
           operator[_i] = arguments[_i];
@@ -20304,7 +20304,7 @@ var init_PDFPage = __esm({
         var contentStream = this.getContentStream();
         contentStream.push.apply(contentStream, operator);
       };
-      PDFPage2.prototype.drawText = function(text, options) {
+      PDFPage3.prototype.drawText = function(text, options) {
         var _a, _b, _c, _d, _e, _f, _g;
         if (options === void 0) {
           options = {};
@@ -20358,7 +20358,7 @@ var init_PDFPage = __esm({
             this.resetFont();
         }
       };
-      PDFPage2.prototype.drawImage = function(image, options) {
+      PDFPage3.prototype.drawImage = function(image, options) {
         var _a, _b, _c, _d, _e, _f, _g;
         if (options === void 0) {
           options = {};
@@ -20390,7 +20390,7 @@ var init_PDFPage = __esm({
           graphicsState: graphicsStateKey
         }));
       };
-      PDFPage2.prototype.drawPage = function(embeddedPage, options) {
+      PDFPage3.prototype.drawPage = function(embeddedPage, options) {
         var _a, _b, _c, _d, _e;
         if (options === void 0) {
           options = {};
@@ -20428,7 +20428,7 @@ var init_PDFPage = __esm({
           graphicsState: graphicsStateKey
         }));
       };
-      PDFPage2.prototype.drawSvgPath = function(path2, options) {
+      PDFPage3.prototype.drawSvgPath = function(path2, options) {
         var _a, _b, _c, _d, _e, _f, _g, _h, _j;
         if (options === void 0) {
           options = {};
@@ -20476,7 +20476,7 @@ var init_PDFPage = __esm({
           graphicsState: graphicsStateKey
         }));
       };
-      PDFPage2.prototype.drawLine = function(options) {
+      PDFPage3.prototype.drawLine = function(options) {
         var _a, _b, _c, _d, _e;
         assertIs(options.start, "options.start", [
           [Object, "{ x: number, y: number }"]
@@ -20514,7 +20514,7 @@ var init_PDFPage = __esm({
           graphicsState: graphicsStateKey
         }));
       };
-      PDFPage2.prototype.drawRectangle = function(options) {
+      PDFPage3.prototype.drawRectangle = function(options) {
         var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o;
         if (options === void 0) {
           options = {};
@@ -20567,7 +20567,7 @@ var init_PDFPage = __esm({
           borderLineCap: (_o = options.borderLineCap) !== null && _o !== void 0 ? _o : void 0
         }));
       };
-      PDFPage2.prototype.drawSquare = function(options) {
+      PDFPage3.prototype.drawSquare = function(options) {
         if (options === void 0) {
           options = {};
         }
@@ -20575,7 +20575,7 @@ var init_PDFPage = __esm({
         assertOrUndefined(size, "size", ["number"]);
         this.drawRectangle(__assign(__assign({}, options), { width: size, height: size }));
       };
-      PDFPage2.prototype.drawEllipse = function(options) {
+      PDFPage3.prototype.drawEllipse = function(options) {
         var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l;
         if (options === void 0) {
           options = {};
@@ -20624,7 +20624,7 @@ var init_PDFPage = __esm({
           graphicsState: graphicsStateKey
         }));
       };
-      PDFPage2.prototype.drawCircle = function(options) {
+      PDFPage3.prototype.drawCircle = function(options) {
         if (options === void 0) {
           options = {};
         }
@@ -20632,7 +20632,7 @@ var init_PDFPage = __esm({
         assertOrUndefined(size, "size", ["number"]);
         this.drawEllipse(__assign(__assign({}, options), { xScale: size, yScale: size }));
       };
-      PDFPage2.prototype.setOrEmbedFont = function(font) {
+      PDFPage3.prototype.setOrEmbedFont = function(font) {
         var oldFont = this.font;
         var oldFontKey = this.fontKey;
         if (font)
@@ -20643,18 +20643,18 @@ var init_PDFPage = __esm({
         var newFontKey = this.fontKey;
         return { oldFont, oldFontKey, newFont, newFontKey };
       };
-      PDFPage2.prototype.getFont = function() {
+      PDFPage3.prototype.getFont = function() {
         if (!this.font || !this.fontKey) {
           var font = this.doc.embedStandardFont(StandardFonts.Helvetica);
           this.setFont(font);
         }
         return [this.font, this.fontKey];
       };
-      PDFPage2.prototype.resetFont = function() {
+      PDFPage3.prototype.resetFont = function() {
         this.font = void 0;
         this.fontKey = void 0;
       };
-      PDFPage2.prototype.getContentStream = function(useExisting) {
+      PDFPage3.prototype.getContentStream = function(useExisting) {
         if (useExisting === void 0) {
           useExisting = true;
         }
@@ -20665,7 +20665,7 @@ var init_PDFPage = __esm({
         this.node.addContentStream(this.contentStreamRef);
         return this.contentStream;
       };
-      PDFPage2.prototype.createContentStream = function() {
+      PDFPage3.prototype.createContentStream = function() {
         var operators = [];
         for (var _i = 0; _i < arguments.length; _i++) {
           operators[_i] = arguments[_i];
@@ -20674,7 +20674,7 @@ var init_PDFPage = __esm({
         var contentStream = PDFContentStream_default.of(dict, operators);
         return contentStream;
       };
-      PDFPage2.prototype.maybeEmbedGraphicsState = function(options) {
+      PDFPage3.prototype.maybeEmbedGraphicsState = function(options) {
         var opacity = options.opacity, borderOpacity = options.borderOpacity, blendMode = options.blendMode;
         if (opacity === void 0 && borderOpacity === void 0 && blendMode === void 0) {
           return void 0;
@@ -20688,7 +20688,7 @@ var init_PDFPage = __esm({
         var key = this.node.newExtGState("GS", graphicsState);
         return key;
       };
-      PDFPage2.prototype.scaleAnnot = function(annot, x, y) {
+      PDFPage3.prototype.scaleAnnot = function(annot, x, y) {
         var selectors = ["RD", "CL", "Vertices", "QuadPoints", "L", "Rect"];
         for (var idx = 0, len = selectors.length; idx < len; idx++) {
           var list = annot.lookup(PDFName_default.of(selectors[idx]));
@@ -20704,17 +20704,17 @@ var init_PDFPage = __esm({
           }
         }
       };
-      PDFPage2.of = function(leafNode, ref, doc) {
-        return new PDFPage2(leafNode, ref, doc);
+      PDFPage3.of = function(leafNode, ref, doc) {
+        return new PDFPage3(leafNode, ref, doc);
       };
-      PDFPage2.create = function(doc) {
+      PDFPage3.create = function(doc) {
         assertIs(doc, "doc", [[PDFDocument_default, "PDFDocument"]]);
         var dummyRef = PDFRef_default.of(-1);
         var pageLeaf = PDFPageLeaf_default.withContextAndParent(doc.context, dummyRef);
         var pageRef = doc.context.register(pageLeaf);
-        return new PDFPage2(pageLeaf, pageRef, doc);
+        return new PDFPage3(pageLeaf, pageRef, doc);
       };
-      return PDFPage2;
+      return PDFPage3;
     }();
     PDFPage_default = PDFPage;
   }
@@ -21211,6 +21211,56 @@ var pdf_ink_exports = {};
 __export(pdf_ink_exports, {
   bakeInkOntoPdf: () => bakeInkOntoPdf
 });
+function strokeColor(stroke2) {
+  if (stroke2.colorRgba) {
+    const [r2, g2, b2, a] = stroke2.colorRgba;
+    return { r: r2 / 255, g: g2 / 255, b: b2 / 255, a: a / 255 };
+  }
+  const [r, g, b] = COLOR_MAP[stroke2.color] ?? COLOR_MAP[0];
+  return { r, g, b, a: 1 };
+}
+function rmWidth(paperSize, strokes) {
+  if (paperSize) return paperSize[0];
+  let maxAbsX = 0;
+  for (const s of strokes) for (const p of s.points) maxAbsX = Math.max(maxAbsX, Math.abs(p.x));
+  return maxAbsX > 720 ? 1620 : 1404;
+}
+function drawStroke(page, stroke2, scale2, halfW, pdfH) {
+  const style = PEN_STYLES[stroke2.tool] ?? { opacity: 1, isHighlighter: false };
+  const color = strokeColor(stroke2);
+  let opacity = style.opacity;
+  if (stroke2.tool === Pen.SHADER && stroke2.colorRgba) opacity = color.a;
+  const toX = (x) => (x + halfW) * scale2;
+  const toY = (y) => pdfH - y * scale2;
+  const border = rgb(color.r, color.g, color.b);
+  if (style.isHighlighter) {
+    const widths = stroke2.points.map((p) => p.width).sort((a, b) => a - b);
+    const median = widths[Math.floor(widths.length / 2)] || 8;
+    const d = stroke2.points.map((p, i) => `${i === 0 ? "M" : "L"}${toX(p.x).toFixed(2)},${(p.y * scale2).toFixed(2)}`).join(" ");
+    page.drawSvgPath(d, {
+      x: 0,
+      y: pdfH,
+      borderColor: border,
+      borderWidth: Math.max(0.4, median * WIDTH_FACTOR * scale2),
+      borderOpacity: opacity,
+      borderLineCap: LineCapStyle.Round,
+      blendMode: BlendMode.Multiply
+    });
+    return;
+  }
+  for (let i = 1; i < stroke2.points.length; i++) {
+    const prev = stroke2.points[i - 1];
+    const curr = stroke2.points[i];
+    page.drawLine({
+      start: { x: toX(prev.x), y: toY(prev.y) },
+      end: { x: toX(curr.x), y: toY(curr.y) },
+      thickness: Math.max(0.3, curr.width * WIDTH_FACTOR * scale2),
+      color: border,
+      opacity,
+      lineCap: LineCapStyle.Round
+    });
+  }
+}
 async function bakeInkOntoPdf(pdfBytes, ink) {
   const doc = await PDFDocument_default.load(pdfBytes, { ignoreEncryption: true, updateMetadata: false });
   const pages = doc.getPages();
@@ -21218,46 +21268,75 @@ async function bakeInkOntoPdf(pdfBytes, ink) {
     const page = pages[pdfPageIndex];
     if (!page || !strokes.length) continue;
     const { width: pdfW, height: pdfH } = page.getSize();
-    const [rmW] = paperSize ?? [1404, 1872];
+    const rmW = rmWidth(paperSize, strokes);
     const scale2 = pdfW / rmW;
     for (const stroke2 of strokes) {
+      if (stroke2.tool === Pen.ERASER || stroke2.tool === Pen.ERASER_AREA) continue;
       if (stroke2.points.length < 2) continue;
-      const [r0, g0, b0] = stroke2.colorRgba ? [stroke2.colorRgba[0], stroke2.colorRgba[1], stroke2.colorRgba[2]] : COLOR_MAP[stroke2.color] ?? [0, 0, 0];
-      const isHighlighter = HIGHLIGHTER_TOOLS.has(stroke2.tool);
-      const widths = stroke2.points.map((p) => p.width).sort((a, b) => a - b);
-      const median = widths[Math.floor(widths.length / 2)] || 8;
-      const lineWidth = Math.max(0.4, median / 4 * scale2);
-      const d = stroke2.points.map((p, i) => `${i === 0 ? "M" : "L"}${((p.x + rmW / 2) * scale2).toFixed(2)},${(p.y * scale2).toFixed(2)}`).join(" ");
-      page.drawSvgPath(d, {
-        x: 0,
-        y: pdfH,
-        borderColor: rgb(r0 / 255, g0 / 255, b0 / 255),
-        borderWidth: lineWidth,
-        borderOpacity: isHighlighter ? 0.45 : 1,
-        borderLineCap: LineCapStyle.Round,
-        blendMode: isHighlighter ? BlendMode.Multiply : BlendMode.Normal
-      });
+      drawStroke(page, stroke2, scale2, rmW / 2, pdfH);
     }
   }
   return doc.save({ useObjectStreams: true });
 }
-var HIGHLIGHTER_TOOLS, COLOR_MAP;
+var Pen, PEN_STYLES, COLOR_MAP, WIDTH_FACTOR;
 var init_pdf_ink = __esm({
   "src/pdf-ink.ts"() {
     init_es2();
-    HIGHLIGHTER_TOOLS = /* @__PURE__ */ new Set([5, 18]);
+    Pen = {
+      BRUSH: 0,
+      PENCIL_1: 1,
+      BALLPOINT_1: 2,
+      MARKER_1: 3,
+      FINELINER_1: 4,
+      HIGHLIGHTER_1: 5,
+      ERASER: 6,
+      MECHANICAL_PENCIL_1: 7,
+      ERASER_AREA: 8,
+      PAINTBRUSH_2: 12,
+      MECHANICAL_PENCIL_2: 13,
+      PENCIL_2: 14,
+      BALLPOINT_2: 15,
+      MARKER_2: 16,
+      FINELINER_2: 17,
+      HIGHLIGHTER_2: 18,
+      CALLIGRAPHY: 21,
+      SHADER: 23
+    };
+    PEN_STYLES = {
+      [Pen.BRUSH]: { opacity: 1, isHighlighter: false },
+      [Pen.PENCIL_1]: { opacity: 0.35, isHighlighter: false },
+      [Pen.PENCIL_2]: { opacity: 0.35, isHighlighter: false },
+      [Pen.BALLPOINT_1]: { opacity: 1, isHighlighter: false },
+      [Pen.BALLPOINT_2]: { opacity: 1, isHighlighter: false },
+      [Pen.MARKER_1]: { opacity: 1, isHighlighter: false },
+      [Pen.MARKER_2]: { opacity: 1, isHighlighter: false },
+      [Pen.FINELINER_1]: { opacity: 1, isHighlighter: false },
+      [Pen.FINELINER_2]: { opacity: 1, isHighlighter: false },
+      [Pen.MECHANICAL_PENCIL_1]: { opacity: 0.7, isHighlighter: false },
+      [Pen.MECHANICAL_PENCIL_2]: { opacity: 0.7, isHighlighter: false },
+      [Pen.PAINTBRUSH_2]: { opacity: 1, isHighlighter: false },
+      [Pen.CALLIGRAPHY]: { opacity: 1, isHighlighter: false },
+      [Pen.HIGHLIGHTER_1]: { opacity: 0.45, isHighlighter: true },
+      [Pen.HIGHLIGHTER_2]: { opacity: 0.45, isHighlighter: true },
+      [Pen.SHADER]: { opacity: 0.3, isHighlighter: true }
+    };
     COLOR_MAP = {
       0: [0, 0, 0],
-      1: [125, 125, 125],
-      2: [255, 255, 255],
-      3: [255, 235, 90],
-      4: [125, 184, 45],
-      5: [255, 120, 180],
-      6: [45, 100, 235],
-      7: [217, 52, 41],
-      8: [125, 125, 125],
-      9: [255, 237, 117]
+      1: [0.5647, 0.5647, 0.5647],
+      2: [1, 1, 1],
+      3: [0.9804, 0.9059, 0.098],
+      4: [0.5686, 0.8549, 0.4431],
+      5: [0.7529, 0.498, 0.8235],
+      6: [0.1882, 0.2902, 0.8784],
+      7: [0.7608, 0.1922, 0.1961],
+      8: [0.5647, 0.5647, 0.5647],
+      9: [0.9804, 0.9059, 0.098],
+      10: [0.5686, 0.8549, 0.4431],
+      11: [0.4549, 0.8235, 0.9098],
+      12: [0.7529, 0.498, 0.8235],
+      13: [0.9804, 0.9059, 0.098]
     };
+    WIDTH_FACTOR = 0.216;
   }
 });
 
@@ -22887,6 +22966,16 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
   async importDocument(docId, name) {
     await this.guarded(docId, () => this.importDocumentInner(docId, name));
   }
+  /** A checkout whose vault note was deleted: re-import from the device, then untrack. */
+  async recoverOrphan(checkout) {
+    const name = (checkout.path.split("/").pop() ?? "Recovered note").replace(/\.(md|pdf)$/i, "");
+    if (checkout.kind === "pdf") await this.importPdf(checkout.docId, name);
+    else await this.importDocument(checkout.docId, name);
+    delete this.settings.checkouts[checkout.docId];
+    this.changedDocs.delete(checkout.docId);
+    await this.saveData(this.settings);
+    this.refreshBannersSoon();
+  }
   async sendNoteInner(file) {
     try {
       const store = this.store();
@@ -23198,15 +23287,21 @@ var ImportModal = class extends import_obsidian.FuzzySuggestModal {
     this.setPlaceholder("Import from reMarkable\u2026");
   }
   getItems() {
-    const checkouts = Object.values(this.plugin.settings.checkouts).filter((c) => this.app.vault.getFileByPath(c.path)).map((c) => ({ kind: "pull", checkout: c, ready: this.plugin.changedDocs.has(c.docId) })).sort((a, b) => Number(b.ready) - Number(a.ready));
-    const outIds = new Set(checkouts.map((c) => c.checkout.docId));
+    const all = Object.values(this.plugin.settings.checkouts);
+    const checkouts = all.filter((c) => this.app.vault.getFileByPath(c.path)).map((c) => ({ kind: "pull", checkout: c, ready: this.plugin.changedDocs.has(c.docId) })).sort((a, b) => Number(b.ready) - Number(a.ready));
+    const orphans = all.filter((c) => !this.app.vault.getFileByPath(c.path)).map((c) => ({ kind: "orphan", checkout: c }));
+    const outIds = new Set(all.map((c) => c.docId));
     const device = this.snap.docs.filter((d) => !outIds.has(d.id) && (d.fileType === "pdf" || d.fileType === "notebook" || d.fileType === "")).map((d) => ({ kind: "device", ...d }));
-    return [...checkouts, ...device];
+    return [...checkouts, ...orphans, ...device];
   }
   getItemText(item) {
     if (item.kind === "pull") {
       const name = item.checkout.path.split("/").pop() ?? item.checkout.path;
       return item.ready ? `Pull back: ${name} (edited on device)` : `Pull back: ${name}`;
+    }
+    if (item.kind === "orphan") {
+      const name = item.checkout.path.split("/").pop() ?? item.checkout.path;
+      return `Recover: ${name} (vault note was deleted)`;
     }
     const folder = this.snap.folders.get(item.parent) ?? "";
     const prefix = item.fileType === "pdf" ? "[PDF] " : "";
@@ -23216,6 +23311,10 @@ var ImportModal = class extends import_obsidian.FuzzySuggestModal {
     if (item.kind === "pull") {
       const file = this.app.vault.getFileByPath(item.checkout.path);
       if (file) void this.plugin.pullNote(file);
+      return;
+    }
+    if (item.kind === "orphan") {
+      void this.plugin.recoverOrphan(item.checkout);
       return;
     }
     if (item.fileType === "pdf") void this.plugin.importPdf(item.id, item.name);

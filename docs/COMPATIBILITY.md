@@ -7,7 +7,7 @@ Audited 2026-07-09 against the 26 other plugins enabled in the author's vault, b
 1. **An editor transaction filter** that drops edits to checked-out notes (when "Lock notes while checked out" is on).
 2. **A banner element** inserted as a sibling after `.view-header` in markdown views.
 3. **Reads and writes of note files** via `vault.process` on pull, and a `remarkable-id` frontmatter key while checked out.
-4. Ribbon icons, a status bar item, a right-sidebar view, file-menu entries. These are additive; Obsidian composes them without conflict.
+4. One ribbon icon opening a dropdown menu, a status bar item, two searchable modals, file-menu entries. These are additive; Obsidian composes them without conflict.
 
 It never patches Obsidian internals, never monkey-patches other plugins, and touches nothing outside the vault except the reMarkable desktop app's store (read plus new-file writes).
 

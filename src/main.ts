@@ -357,6 +357,18 @@ export default class RemarkableBridge extends Plugin {
     await this.guarded(docId, () => this.importDocumentInner(docId, name));
   }
 
+  /** A checkout whose vault note was deleted: re-import from the device, then untrack. */
+  async recoverOrphan(checkout: Checkout) {
+    const name = (checkout.path.split("/").pop() ?? "Recovered note").replace(/\.(md|pdf)$/i, "");
+    if (checkout.kind === "pdf") await this.importPdf(checkout.docId, name);
+    else await this.importDocument(checkout.docId, name);
+    // Untrack; the device copy is kept so nothing is lost.
+    delete this.settings.checkouts[checkout.docId];
+    this.changedDocs.delete(checkout.docId);
+    await this.saveData(this.settings);
+    this.refreshBannersSoon();
+  }
+
   private async sendNoteInner(file: TFile) {
     try {
       const store = this.store();
@@ -701,6 +713,7 @@ export default class RemarkableBridge extends Plugin {
 
 type ImportItem =
   | { kind: "pull"; checkout: Checkout; ready: boolean }
+  | { kind: "orphan"; checkout: Checkout }
   | { kind: "device"; id: string; name: string; parent: string; fileType: string };
 
 class ImportModal extends FuzzySuggestModal<ImportItem> {
@@ -709,20 +722,28 @@ class ImportModal extends FuzzySuggestModal<ImportItem> {
     this.setPlaceholder("Import from reMarkable…");
   }
   getItems(): ImportItem[] {
-    const checkouts = Object.values(this.plugin.settings.checkouts)
+    const all = Object.values(this.plugin.settings.checkouts);
+    const checkouts = all
       .filter((c) => this.app.vault.getFileByPath(c.path))
       .map((c) => ({ kind: "pull" as const, checkout: c, ready: this.plugin.changedDocs.has(c.docId) }))
       .sort((a, b) => Number(b.ready) - Number(a.ready));
-    const outIds = new Set(checkouts.map((c) => c.checkout.docId));
+    const orphans = all
+      .filter((c) => !this.app.vault.getFileByPath(c.path))
+      .map((c) => ({ kind: "orphan" as const, checkout: c }));
+    const outIds = new Set(all.map((c) => c.docId));
     const device = this.snap.docs
       .filter((d) => !outIds.has(d.id) && (d.fileType === "pdf" || d.fileType === "notebook" || d.fileType === ""))
       .map((d) => ({ kind: "device" as const, ...d }));
-    return [...checkouts, ...device];
+    return [...checkouts, ...orphans, ...device];
   }
   getItemText(item: ImportItem) {
     if (item.kind === "pull") {
       const name = item.checkout.path.split("/").pop() ?? item.checkout.path;
       return item.ready ? `Pull back: ${name} (edited on device)` : `Pull back: ${name}`;
+    }
+    if (item.kind === "orphan") {
+      const name = item.checkout.path.split("/").pop() ?? item.checkout.path;
+      return `Recover: ${name} (vault note was deleted)`;
     }
     const folder = this.snap.folders.get(item.parent) ?? "";
     const prefix = item.fileType === "pdf" ? "[PDF] " : "";
@@ -732,6 +753,10 @@ class ImportModal extends FuzzySuggestModal<ImportItem> {
     if (item.kind === "pull") {
       const file = this.app.vault.getFileByPath(item.checkout.path);
       if (file) void this.plugin.pullNote(file);
+      return;
+    }
+    if (item.kind === "orphan") {
+      void this.plugin.recoverOrphan(item.checkout);
       return;
     }
     if (item.fileType === "pdf") void this.plugin.importPdf(item.id, item.name);
