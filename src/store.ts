@@ -109,10 +109,15 @@ export class RemarkableStore {
 
   /**
    * One pass over the library: all documents plus a folder-name map.
-   * Cached for 10 seconds; concurrent callers share one scan.
+   * Cached for 60 seconds; concurrent callers share one scan.
+   *
+   * Concurrency stays at 2: node gives the whole renderer one small I/O
+   * thread pool, and while the reMarkable app is syncing, reads on the store
+   * can be very slow. Saturating the pool starves every other plugin's (and
+   * Obsidian's own) file access.
    */
   snapshot(): Promise<StoreSnapshot> {
-    if (this.snapshotCache && Date.now() - this.snapshotCache.at < 10_000) {
+    if (this.snapshotCache && Date.now() - this.snapshotCache.at < 60_000) {
       return this.snapshotCache.promise;
     }
     const promise = this.buildSnapshot();
@@ -125,46 +130,43 @@ export class RemarkableStore {
     this.snapshotCache = null;
   }
 
+  private async mapLimited<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<void> {
+    let next = 0;
+    const worker = async () => {
+      while (next < items.length) {
+        const i = next++;
+        await fn(items[i]);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  }
+
   private async buildSnapshot(): Promise<StoreSnapshot> {
     const entries = await fsp.readdir(this.root);
     const metaFiles = entries.filter((f) => f.endsWith(".metadata"));
+    const present = new Set(entries);
     const docs: DocInfo[] = [];
     const folders = new Map<string, string>();
-    const docIdsNeedingType: DocInfo[] = [];
 
-    const CHUNK = 32;
-    for (let i = 0; i < metaFiles.length; i += CHUNK) {
-      await Promise.all(
-        metaFiles.slice(i, i + CHUNK).map(async (f) => {
-          const meta = (await readJson(path.join(this.root, f))) as (DocMetadata & Record<string, unknown>) | null;
-          if (!meta) return;
-          const id = f.slice(0, -".metadata".length);
-          if (meta.type === "CollectionType" && !meta.deleted) {
-            folders.set(id, meta.visibleName);
-            return;
-          }
-          if (meta.type !== "DocumentType" || meta.deleted || meta.parent === "trash") return;
-          const info: DocInfo = {
-            id,
-            name: meta.visibleName,
-            parent: meta.parent ?? "",
-            lastModified: parseInt(meta.lastModified, 10) || 0,
-            fileType: "notebook",
-          };
-          docs.push(info);
-          docIdsNeedingType.push(info);
-        })
-      );
-    }
-
-    for (let i = 0; i < docIdsNeedingType.length; i += CHUNK) {
-      await Promise.all(
-        docIdsNeedingType.slice(i, i + CHUNK).map(async (info) => {
-          const content = await readJson(path.join(this.root, `${info.id}.content`));
-          if (content && typeof content.fileType === "string") info.fileType = content.fileType;
-        })
-      );
-    }
+    await this.mapLimited(metaFiles, 2, async (f) => {
+      const meta = (await readJson(path.join(this.root, f))) as (DocMetadata & Record<string, unknown>) | null;
+      if (!meta) return;
+      const id = f.slice(0, -".metadata".length);
+      if (meta.type === "CollectionType" && !meta.deleted) {
+        folders.set(id, meta.visibleName);
+        return;
+      }
+      if (meta.type !== "DocumentType" || meta.deleted || meta.parent === "trash") return;
+      // File type from sidecar presence: avoids a second read per document.
+      const fileType = present.has(`${id}.pdf`) ? "pdf" : present.has(`${id}.epub`) ? "epub" : "notebook";
+      docs.push({
+        id,
+        name: meta.visibleName,
+        parent: meta.parent ?? "",
+        lastModified: parseInt(meta.lastModified, 10) || 0,
+        fileType,
+      });
+    });
 
     docs.sort((a, b) => b.lastModified - a.lastModified);
     return { docs, folders, documents: metaFiles.length };
