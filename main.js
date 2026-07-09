@@ -1131,6 +1131,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     );
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.refreshBanners()));
     this.registerEvent(this.app.workspace.on("layout-change", () => this.refreshBanners()));
+    this.registerEvent(this.app.workspace.on("file-open", () => this.refreshBannersSoon()));
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
         for (const c of Object.values(this.settings.checkouts)) {
@@ -1197,7 +1198,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
         fm[FM_ID] = docId;
       });
       this.startWatcher();
-      this.refreshBanners();
+      this.refreshBannersSoon();
       new import_obsidian.Notice(`Sent "${file.basename}" to reMarkable (${this.settings.deviceFolder} folder). It will appear after the app syncs.`);
     } catch (e) {
       new import_obsidian.Notice(`Send failed: ${e instanceof Error ? e.message : e}`, 1e4);
@@ -1235,7 +1236,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
       delete this.settings.checkouts[checkout.docId];
       this.changedDocs.delete(checkout.docId);
       await this.saveData(this.settings);
-      this.refreshBanners();
+      this.refreshBannersSoon();
       new import_obsidian.Notice(`Pulled "${file.basename}" back from reMarkable.`);
       for (const w of warnings) new import_obsidian.Notice(`reMarkable bridge: ${w}`, 1e4);
     } catch (e) {
@@ -1260,12 +1261,18 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     await this.app.fileManager.processFrontMatter(file, (front) => {
       delete front[FM_ID];
     });
-    this.refreshBanners();
+    this.refreshBannersSoon();
     new import_obsidian.Notice(`Released "${file.basename}". The device copy was moved to the reMarkable trash.`);
   }
   /* ---------------------------------------------------------------- */
   /* Banner                                                            */
   /* ---------------------------------------------------------------- */
+  /** Refresh now and again shortly after, to outlast frontmatter re-renders. */
+  refreshBannersSoon() {
+    this.refreshBanners();
+    window.setTimeout(() => this.refreshBanners(), 400);
+    window.setTimeout(() => this.refreshBanners(), 1200);
+  }
   refreshBanners() {
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
