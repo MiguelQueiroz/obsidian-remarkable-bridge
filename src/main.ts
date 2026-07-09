@@ -411,7 +411,7 @@ export default class RemarkableBridge extends Plugin {
     }
   }
 
-  /** Extract device highlights of a tracked PDF into a companion note. */
+  /** Pull device annotations of a tracked PDF: baked-ink copy + highlights note. */
   async pullHighlights(file: TFile) {
     const checkout = this.checkoutForFile(file);
     if (!checkout) return;
@@ -422,28 +422,47 @@ export default class RemarkableBridge extends Plugin {
         return;
       }
       const perPage = store.readHighlights(checkout.docId);
-      if (!perPage.length) {
-        new Notice(
-          "No text highlights found. On the device, use the highlighter on PDF text; plain ink is not converted.",
-          10000
-        );
+      const { ink, skippedPages } = store.readInk(checkout.docId);
+      if (!perPage.length && !ink.length) {
+        new Notice("Nothing to pull yet: no ink or highlights found on the device copy.", 10000);
         return;
       }
-      const lines: string[] = [`Highlights from [[${file.name}]], pulled ${new Date().toLocaleString()}.`, ""];
-      for (const { page, highlights } of perPage) {
-        lines.push(`## Page ${page}`, "");
-        for (const h of highlights) lines.push(`> ${h.text}`, "");
+      const made: string[] = [];
+
+      if (ink.length) {
+        const base = store.readPdfBytes(checkout.docId);
+        if (base) {
+          const { bakeInkOntoPdf } = await import("./pdf-ink");
+          const baked = await bakeInkOntoPdf(base, ink);
+          const target = file.path.replace(/\.pdf$/i, " (annotated).pdf");
+          const existing = this.app.vault.getFileByPath(target);
+          const buf = baked.buffer.slice(baked.byteOffset, baked.byteOffset + baked.byteLength) as ArrayBuffer;
+          if (existing) await this.app.vault.modifyBinary(existing, buf);
+          else await this.app.vault.createBinary(target, buf);
+          made.push(`"${target}" with ink on ${ink.length} pages`);
+        }
       }
-      const target = file.path.replace(/\.pdf$/i, " highlights.md");
-      const existing = this.app.vault.getFileByPath(target);
-      if (existing) await this.app.vault.modify(existing, lines.join("\n"));
-      else await this.app.vault.create(target, lines.join("\n"));
+
+      if (perPage.length) {
+        const lines: string[] = [`Highlights from [[${file.name}]], pulled ${new Date().toLocaleString()}.`, ""];
+        for (const { page, highlights } of perPage) {
+          lines.push(`## Page ${page}`, "");
+          for (const h of highlights) lines.push(`> ${h.text}`, "");
+        }
+        const target = file.path.replace(/\.pdf$/i, " highlights.md");
+        const existing = this.app.vault.getFileByPath(target);
+        if (existing) await this.app.vault.modify(existing, lines.join("\n"));
+        else await this.app.vault.create(target, lines.join("\n"));
+        const total = perPage.reduce((n, p) => n + p.highlights.length, 0);
+        made.push(`${total} text highlights`);
+      }
+
       this.changedDocs.delete(checkout.docId);
       this.refreshDashboards();
-      const total = perPage.reduce((n, p) => n + p.highlights.length, 0);
-      new Notice(`Pulled ${total} highlights to "${target}". The PDF stays on the device for more.`);
-      const note = this.app.vault.getFileByPath(target);
-      if (note) await this.app.workspace.getLeaf().openFile(note);
+      new Notice(`Pulled ${made.join(" and ")}. The device copy stays for further annotation.`);
+      if (skippedPages) {
+        new Notice(`${skippedPages} inserted notebook pages were not baked (no PDF page to draw on).`, 8000);
+      }
     } catch (e) {
       new Notice(`Pull failed: ${e instanceof Error ? e.message : e}`, 10000);
       console.error(e);
@@ -454,10 +473,15 @@ export default class RemarkableBridge extends Plugin {
   async importPdf(docId: string, name: string) {
     try {
       const store = this.store();
-      const bytes = store.readPdfBytes(docId);
+      let bytes = store.readPdfBytes(docId);
       if (!bytes) {
         new Notice(`No PDF file found for "${name}".`, 8000);
         return;
+      }
+      const { ink } = store.readInk(docId);
+      if (ink.length) {
+        const { bakeInkOntoPdf } = await import("./pdf-ink");
+        bytes = await bakeInkOntoPdf(bytes, ink);
       }
       const folder = normalizePath(this.settings.importFolder || "reMarkable imports");
       if (!this.app.vault.getFolderByPath(folder)) await this.app.vault.createFolder(folder);
@@ -478,11 +502,11 @@ export default class RemarkableBridge extends Plugin {
         await this.app.vault.create(target.replace(/\.pdf$/i, " highlights.md"), lines.join("\n"));
       }
       await this.app.workspace.getLeaf().openFile(pdfFile);
-      new Notice(
-        perPage.length
-          ? `Imported "${name}" with a highlights note.`
-          : `Imported "${name}". No text highlights found on it. Ink annotations are not rendered (yet).`
-      );
+      const extras = [
+        ink.length ? `ink baked onto ${ink.length} pages` : "",
+        perPage.length ? "a highlights note" : "",
+      ].filter(Boolean);
+      new Notice(`Imported "${name}"${extras.length ? ` with ${extras.join(" and ")}` : ""}.`);
     } catch (e) {
       new Notice(`Import failed: ${e instanceof Error ? e.message : e}`, 10000);
       console.error(e);

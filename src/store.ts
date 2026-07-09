@@ -11,7 +11,17 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { randomUUID } from "crypto";
-import { buildTextPage, parsePage, parseHighlights, Highlight, OutParagraph, ParsedPage } from "./rm/codec";
+import {
+  buildTextPage,
+  parsePage,
+  parseHighlights,
+  parseStrokes,
+  parsePaperSize,
+  Highlight,
+  OutParagraph,
+  ParsedPage,
+} from "./rm/codec";
+import { PageInk } from "./pdf-ink";
 
 export interface DocMetadata {
   visibleName: string;
@@ -263,6 +273,46 @@ export class RemarkableStore {
   readPdfBytes(docId: string): Uint8Array | null {
     const p = path.join(this.root, `${docId}.pdf`);
     return fs.existsSync(p) ? fs.readFileSync(p) : null;
+  }
+
+  /** Page ids in order with their base-PDF page index (or null if inserted). */
+  private pageMap(docId: string): { pageId: string; pdfPageIndex: number | null }[] {
+    const content = JSON.parse(fs.readFileSync(path.join(this.root, `${docId}.content`), "utf8"));
+    if (content.cPages?.pages) {
+      return content.cPages.pages.map((p: { id: string; redir?: { value: number } }, i: number) => ({
+        pageId: p.id,
+        pdfPageIndex: p.redir ? p.redir.value : i,
+      }));
+    }
+    const pages: string[] = content.pages ?? [];
+    const redirect: number[] = content.redirectionPageMap ?? pages.map((_, i) => i);
+    return pages.map((pageId, i) => ({
+      pageId,
+      pdfPageIndex: redirect[i] >= 0 ? redirect[i] : null,
+    }));
+  }
+
+  /** Extract ink strokes per base-PDF page, for baking into the PDF. */
+  readInk(docId: string): { ink: PageInk[]; skippedPages: number } {
+    const ink: PageInk[] = [];
+    let skippedPages = 0;
+    for (const { pageId, pdfPageIndex } of this.pageMap(docId)) {
+      const rmPath = path.join(this.root, docId, `${pageId}.rm`);
+      if (!fs.existsSync(rmPath)) continue;
+      try {
+        const buf = fs.readFileSync(rmPath);
+        const strokes = parseStrokes(buf);
+        if (!strokes.length) continue;
+        if (pdfPageIndex === null) {
+          skippedPages++;
+          continue;
+        }
+        ink.push({ pdfPageIndex, strokes, paperSize: parsePaperSize(buf) });
+      } catch {
+        continue;
+      }
+    }
+    return { ink, skippedPages };
   }
 
   /** Extract smart highlights per page, in page order (1-based page numbers). */

@@ -21206,6 +21206,61 @@ var init_es2 = __esm({
   }
 });
 
+// src/pdf-ink.ts
+var pdf_ink_exports = {};
+__export(pdf_ink_exports, {
+  bakeInkOntoPdf: () => bakeInkOntoPdf
+});
+async function bakeInkOntoPdf(pdfBytes, ink) {
+  const doc = await PDFDocument_default.load(pdfBytes, { ignoreEncryption: true, updateMetadata: false });
+  const pages = doc.getPages();
+  for (const { pdfPageIndex, strokes, paperSize } of ink) {
+    const page = pages[pdfPageIndex];
+    if (!page || !strokes.length) continue;
+    const { width: pdfW, height: pdfH } = page.getSize();
+    const [rmW] = paperSize ?? [1404, 1872];
+    const scale2 = pdfW / rmW;
+    for (const stroke2 of strokes) {
+      if (stroke2.points.length < 2) continue;
+      const [r0, g0, b0] = stroke2.colorRgba ? [stroke2.colorRgba[0], stroke2.colorRgba[1], stroke2.colorRgba[2]] : COLOR_MAP[stroke2.color] ?? [0, 0, 0];
+      const isHighlighter = HIGHLIGHTER_TOOLS.has(stroke2.tool);
+      const widths = stroke2.points.map((p) => p.width).sort((a, b) => a - b);
+      const median = widths[Math.floor(widths.length / 2)] || 8;
+      const lineWidth = Math.max(0.4, median / 4 * scale2);
+      const d = stroke2.points.map((p, i) => `${i === 0 ? "M" : "L"}${((p.x + rmW / 2) * scale2).toFixed(2)},${(p.y * scale2).toFixed(2)}`).join(" ");
+      page.drawSvgPath(d, {
+        x: 0,
+        y: pdfH,
+        borderColor: rgb(r0 / 255, g0 / 255, b0 / 255),
+        borderWidth: lineWidth,
+        borderOpacity: isHighlighter ? 0.45 : 1,
+        borderLineCap: LineCapStyle.Round,
+        blendMode: isHighlighter ? BlendMode.Multiply : BlendMode.Normal
+      });
+    }
+  }
+  return doc.save({ useObjectStreams: true });
+}
+var HIGHLIGHTER_TOOLS, COLOR_MAP;
+var init_pdf_ink = __esm({
+  "src/pdf-ink.ts"() {
+    init_es2();
+    HIGHLIGHTER_TOOLS = /* @__PURE__ */ new Set([5, 18]);
+    COLOR_MAP = {
+      0: [0, 0, 0],
+      1: [125, 125, 125],
+      2: [255, 255, 255],
+      3: [255, 235, 90],
+      4: [125, 184, 45],
+      5: [255, 120, 180],
+      6: [45, 100, 235],
+      7: [217, 52, 41],
+      8: [125, 125, 125],
+      9: [255, 237, 117]
+    };
+  }
+});
+
 // src/main.ts
 var main_exports = {};
 __export(main_exports, {
@@ -21265,6 +21320,11 @@ var Reader = class {
   u8() {
     if (this.pos >= this.buf.length) throw new Error("EOF");
     return this.buf[this.pos++];
+  }
+  u16() {
+    const v = this.view.getUint16(this.pos, true);
+    this.pos += 2;
+    return v;
   }
   u32() {
     const v = this.view.getUint32(this.pos, true);
@@ -21710,6 +21770,103 @@ function parseHighlights(file) {
   }
   return highlights;
 }
+function parseStrokes(file) {
+  if (!isV6(file)) return [];
+  const strokes = [];
+  for (const b of splitBlocks(file)) {
+    if (b.blockType !== BlockType.SceneLineItem) continue;
+    try {
+      const r = new Reader(b.payload);
+      const pointVersion = b.currentVersion;
+      r.tag(1, TagType.ID);
+      r.crdtId();
+      r.tag(2, TagType.ID);
+      r.crdtId();
+      r.tag(3, TagType.ID);
+      r.crdtId();
+      r.tag(4, TagType.ID);
+      r.crdtId();
+      r.tag(5, TagType.Byte4);
+      const deletedLength = r.u32();
+      if (deletedLength > 0 || !r.checkTag(6, TagType.Length4)) continue;
+      readSubblockBounded(r, 6, (r2) => {
+        const itemType = r2.u8();
+        if (itemType !== 3) return;
+        r2.tag(1, TagType.Byte4);
+        const tool = r2.u32();
+        r2.tag(2, TagType.Byte4);
+        const color = r2.u32();
+        r2.tag(3, TagType.Byte8);
+        const thicknessScale = r2.f64();
+        r2.tag(4, TagType.Byte4);
+        r2.f32();
+        const points = [];
+        readSubblockBounded(r2, 5, (r3, end) => {
+          const pointSize = pointVersion === 1 ? 24 : 14;
+          while (r3.pos + pointSize <= end) {
+            const x = r3.f32();
+            const y = r3.f32();
+            let width;
+            if (pointVersion === 1) {
+              r3.f32();
+              r3.f32();
+              width = Math.round(r3.f32() * 4);
+              r3.f32();
+            } else {
+              r3.u16();
+              width = r3.u16();
+              r3.u8();
+              r3.u8();
+            }
+            points.push({ x, y, width });
+          }
+        });
+        r2.tag(6, TagType.ID);
+        r2.crdtId();
+        if (r2.checkTag(7, TagType.ID)) {
+          r2.tag(7, TagType.ID);
+          r2.crdtId();
+        }
+        let colorRgba = null;
+        if (r2.checkTag(8, TagType.Byte4)) {
+          r2.tag(8, TagType.Byte4);
+          const packed = r2.u32();
+          colorRgba = [packed >> 16 & 255, packed >> 8 & 255, packed & 255, packed >> 24 & 255];
+        }
+        if (points.length) strokes.push({ tool, color, colorRgba, thicknessScale, points });
+      });
+    } catch {
+      continue;
+    }
+  }
+  return strokes;
+}
+function parsePaperSize(file) {
+  if (!isV6(file)) return null;
+  for (const b of splitBlocks(file)) {
+    if (b.blockType !== BlockType.SceneInfo) continue;
+    try {
+      const r = new Reader(b.payload);
+      readSubblockBounded(r, 1, (r2) => {
+        r2.tag(1, TagType.ID);
+        r2.crdtId();
+        r2.tag(2, TagType.ID);
+        r2.crdtId();
+      });
+      for (const idx of [2, 3]) {
+        if (r.checkTag(idx, TagType.Length4)) {
+          readSubblockBounded(r, idx, () => void 0);
+        }
+      }
+      if (r.checkTag(5, TagType.Length4)) {
+        return readSubblockBounded(r, 5, (r2) => [r2.u32(), r2.u32()]);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
 function parsePage(file) {
   const warnings = [];
   if (!isV6(file)) {
@@ -22120,6 +22277,44 @@ var RemarkableStore = class {
   readPdfBytes(docId) {
     const p = path.join(this.root, `${docId}.pdf`);
     return fs.existsSync(p) ? fs.readFileSync(p) : null;
+  }
+  /** Page ids in order with their base-PDF page index (or null if inserted). */
+  pageMap(docId) {
+    const content = JSON.parse(fs.readFileSync(path.join(this.root, `${docId}.content`), "utf8"));
+    if (content.cPages?.pages) {
+      return content.cPages.pages.map((p, i) => ({
+        pageId: p.id,
+        pdfPageIndex: p.redir ? p.redir.value : i
+      }));
+    }
+    const pages = content.pages ?? [];
+    const redirect = content.redirectionPageMap ?? pages.map((_, i) => i);
+    return pages.map((pageId, i) => ({
+      pageId,
+      pdfPageIndex: redirect[i] >= 0 ? redirect[i] : null
+    }));
+  }
+  /** Extract ink strokes per base-PDF page, for baking into the PDF. */
+  readInk(docId) {
+    const ink = [];
+    let skippedPages = 0;
+    for (const { pageId, pdfPageIndex } of this.pageMap(docId)) {
+      const rmPath = path.join(this.root, docId, `${pageId}.rm`);
+      if (!fs.existsSync(rmPath)) continue;
+      try {
+        const buf = fs.readFileSync(rmPath);
+        const strokes = parseStrokes(buf);
+        if (!strokes.length) continue;
+        if (pdfPageIndex === null) {
+          skippedPages++;
+          continue;
+        }
+        ink.push({ pdfPageIndex, strokes, paperSize: parsePaperSize(buf) });
+      } catch {
+        continue;
+      }
+    }
+    return { ink, skippedPages };
   }
   /** Extract smart highlights per page, in page order (1-based page numbers). */
   readHighlights(docId) {
@@ -22717,7 +22912,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
       if (!(e instanceof StoreError)) console.error(e);
     }
   }
-  /** Extract device highlights of a tracked PDF into a companion note. */
+  /** Pull device annotations of a tracked PDF: baked-ink copy + highlights note. */
   async pullHighlights(file) {
     const checkout = this.checkoutForFile(file);
     if (!checkout) return;
@@ -22728,28 +22923,44 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
         return;
       }
       const perPage = store.readHighlights(checkout.docId);
-      if (!perPage.length) {
-        new import_obsidian.Notice(
-          "No text highlights found. On the device, use the highlighter on PDF text; plain ink is not converted.",
-          1e4
-        );
+      const { ink, skippedPages } = store.readInk(checkout.docId);
+      if (!perPage.length && !ink.length) {
+        new import_obsidian.Notice("Nothing to pull yet: no ink or highlights found on the device copy.", 1e4);
         return;
       }
-      const lines = [`Highlights from [[${file.name}]], pulled ${(/* @__PURE__ */ new Date()).toLocaleString()}.`, ""];
-      for (const { page, highlights } of perPage) {
-        lines.push(`## Page ${page}`, "");
-        for (const h of highlights) lines.push(`> ${h.text}`, "");
+      const made = [];
+      if (ink.length) {
+        const base = store.readPdfBytes(checkout.docId);
+        if (base) {
+          const { bakeInkOntoPdf: bakeInkOntoPdf2 } = await Promise.resolve().then(() => (init_pdf_ink(), pdf_ink_exports));
+          const baked = await bakeInkOntoPdf2(base, ink);
+          const target = file.path.replace(/\.pdf$/i, " (annotated).pdf");
+          const existing = this.app.vault.getFileByPath(target);
+          const buf = baked.buffer.slice(baked.byteOffset, baked.byteOffset + baked.byteLength);
+          if (existing) await this.app.vault.modifyBinary(existing, buf);
+          else await this.app.vault.createBinary(target, buf);
+          made.push(`"${target}" with ink on ${ink.length} pages`);
+        }
       }
-      const target = file.path.replace(/\.pdf$/i, " highlights.md");
-      const existing = this.app.vault.getFileByPath(target);
-      if (existing) await this.app.vault.modify(existing, lines.join("\n"));
-      else await this.app.vault.create(target, lines.join("\n"));
+      if (perPage.length) {
+        const lines = [`Highlights from [[${file.name}]], pulled ${(/* @__PURE__ */ new Date()).toLocaleString()}.`, ""];
+        for (const { page, highlights } of perPage) {
+          lines.push(`## Page ${page}`, "");
+          for (const h of highlights) lines.push(`> ${h.text}`, "");
+        }
+        const target = file.path.replace(/\.pdf$/i, " highlights.md");
+        const existing = this.app.vault.getFileByPath(target);
+        if (existing) await this.app.vault.modify(existing, lines.join("\n"));
+        else await this.app.vault.create(target, lines.join("\n"));
+        const total = perPage.reduce((n, p) => n + p.highlights.length, 0);
+        made.push(`${total} text highlights`);
+      }
       this.changedDocs.delete(checkout.docId);
       this.refreshDashboards();
-      const total = perPage.reduce((n, p) => n + p.highlights.length, 0);
-      new import_obsidian.Notice(`Pulled ${total} highlights to "${target}". The PDF stays on the device for more.`);
-      const note = this.app.vault.getFileByPath(target);
-      if (note) await this.app.workspace.getLeaf().openFile(note);
+      new import_obsidian.Notice(`Pulled ${made.join(" and ")}. The device copy stays for further annotation.`);
+      if (skippedPages) {
+        new import_obsidian.Notice(`${skippedPages} inserted notebook pages were not baked (no PDF page to draw on).`, 8e3);
+      }
     } catch (e) {
       new import_obsidian.Notice(`Pull failed: ${e instanceof Error ? e.message : e}`, 1e4);
       console.error(e);
@@ -22759,10 +22970,15 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
   async importPdf(docId, name) {
     try {
       const store = this.store();
-      const bytes = store.readPdfBytes(docId);
+      let bytes = store.readPdfBytes(docId);
       if (!bytes) {
         new import_obsidian.Notice(`No PDF file found for "${name}".`, 8e3);
         return;
+      }
+      const { ink } = store.readInk(docId);
+      if (ink.length) {
+        const { bakeInkOntoPdf: bakeInkOntoPdf2 } = await Promise.resolve().then(() => (init_pdf_ink(), pdf_ink_exports));
+        bytes = await bakeInkOntoPdf2(bytes, ink);
       }
       const folder = (0, import_obsidian.normalizePath)(this.settings.importFolder || "reMarkable imports");
       if (!this.app.vault.getFolderByPath(folder)) await this.app.vault.createFolder(folder);
@@ -22782,9 +22998,11 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
         await this.app.vault.create(target.replace(/\.pdf$/i, " highlights.md"), lines.join("\n"));
       }
       await this.app.workspace.getLeaf().openFile(pdfFile);
-      new import_obsidian.Notice(
-        perPage.length ? `Imported "${name}" with a highlights note.` : `Imported "${name}". No text highlights found on it. Ink annotations are not rendered (yet).`
-      );
+      const extras = [
+        ink.length ? `ink baked onto ${ink.length} pages` : "",
+        perPage.length ? "a highlights note" : ""
+      ].filter(Boolean);
+      new import_obsidian.Notice(`Imported "${name}"${extras.length ? ` with ${extras.join(" and ")}` : ""}.`);
     } catch (e) {
       new import_obsidian.Notice(`Import failed: ${e instanceof Error ? e.message : e}`, 1e4);
       console.error(e);

@@ -82,6 +82,11 @@ class Reader {
     if (this.pos >= this.buf.length) throw new Error("EOF");
     return this.buf[this.pos++];
   }
+  u16(): number {
+    const v = this.view.getUint16(this.pos, true);
+    this.pos += 2;
+    return v;
+  }
   u32(): number {
     const v = this.view.getUint32(this.pos, true);
     this.pos += 4;
@@ -593,6 +598,122 @@ export function parseHighlights(file: Uint8Array): Highlight[] {
     }
   }
   return highlights;
+}
+
+export interface StrokePoint {
+  x: number;
+  y: number;
+  width: number;
+}
+
+export interface Stroke {
+  tool: number;
+  color: number;
+  colorRgba: [number, number, number, number] | null;
+  thicknessScale: number;
+  points: StrokePoint[];
+}
+
+/** Extract pen strokes from a page (v2 point format, firmware 3.x). */
+export function parseStrokes(file: Uint8Array): Stroke[] {
+  if (!isV6(file)) return [];
+  const strokes: Stroke[] = [];
+  for (const b of splitBlocks(file)) {
+    if (b.blockType !== BlockType.SceneLineItem) continue;
+    try {
+      const r = new Reader(b.payload);
+      const pointVersion = b.currentVersion;
+      r.tag(1, TagType.ID);
+      r.crdtId();
+      r.tag(2, TagType.ID);
+      r.crdtId();
+      r.tag(3, TagType.ID);
+      r.crdtId();
+      r.tag(4, TagType.ID);
+      r.crdtId();
+      r.tag(5, TagType.Byte4);
+      const deletedLength = r.u32();
+      if (deletedLength > 0 || !r.checkTag(6, TagType.Length4)) continue;
+      readSubblockBounded(r, 6, (r) => {
+        const itemType = r.u8();
+        if (itemType !== 0x03) return;
+        r.tag(1, TagType.Byte4);
+        const tool = r.u32();
+        r.tag(2, TagType.Byte4);
+        const color = r.u32();
+        r.tag(3, TagType.Byte8);
+        const thicknessScale = r.f64();
+        r.tag(4, TagType.Byte4);
+        r.f32();
+        const points: StrokePoint[] = [];
+        readSubblockBounded(r, 5, (r, end) => {
+          const pointSize = pointVersion === 1 ? 0x18 : 0x0e;
+          while (r.pos + pointSize <= end) {
+            const x = r.f32();
+            const y = r.f32();
+            let width: number;
+            if (pointVersion === 1) {
+              r.f32();
+              r.f32();
+              width = Math.round(r.f32() * 4);
+              r.f32();
+            } else {
+              r.u16();
+              width = r.u16();
+              r.u8();
+              r.u8();
+            }
+            points.push({ x, y, width });
+          }
+        });
+        r.tag(6, TagType.ID);
+        r.crdtId();
+        if (r.checkTag(7, TagType.ID)) {
+          r.tag(7, TagType.ID);
+          r.crdtId();
+        }
+        let colorRgba: Stroke["colorRgba"] = null;
+        if (r.checkTag(8, TagType.Byte4)) {
+          r.tag(8, TagType.Byte4);
+          const packed = r.u32();
+          colorRgba = [(packed >> 16) & 0xff, (packed >> 8) & 0xff, packed & 0xff, (packed >> 24) & 0xff];
+        }
+        if (points.length) strokes.push({ tool, color, colorRgba, thicknessScale, points });
+      });
+    } catch {
+      continue;
+    }
+  }
+  return strokes;
+}
+
+/** Read the page's paper size from its SceneInfo block, if present. */
+export function parsePaperSize(file: Uint8Array): [number, number] | null {
+  if (!isV6(file)) return null;
+  for (const b of splitBlocks(file)) {
+    if (b.blockType !== BlockType.SceneInfo) continue;
+    try {
+      const r = new Reader(b.payload);
+      readSubblockBounded(r, 1, (r) => {
+        r.tag(1, TagType.ID);
+        r.crdtId();
+        r.tag(2, TagType.ID);
+        r.crdtId();
+      });
+      // Optional lww bools (2, 3) then int pair (5).
+      for (const idx of [2, 3]) {
+        if (r.checkTag(idx, TagType.Length4)) {
+          readSubblockBounded(r, idx, () => undefined);
+        }
+      }
+      if (r.checkTag(5, TagType.Length4)) {
+        return readSubblockBounded(r, 5, (r) => [r.u32(), r.u32()] as [number, number]);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
 }
 
 export function parsePage(file: Uint8Array): ParsedPage {
