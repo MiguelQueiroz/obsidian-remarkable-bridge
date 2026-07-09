@@ -53,6 +53,7 @@ A `((...))` can contain italics, citations, anything a footnote can contain. It 
 - Numbering on the device is frozen at send time. New `((...))` footnotes don't get numbers until pull. This is deliberate: renumbering live on the device is impossible, so the plugin does it once, on return.
 - Never renumber markers by hand on the device. Move a marker like `[2]` around freely (cut and paste it with its brackets), but let the plugin fix the ordering afterwards.
 - A marker without a Notes entry, or a Notes entry without a marker, is reported as a warning on pull, with the note text preserved so nothing is lost.
+- Avoid writing literal bracketed numbers like `[2]` as ordinary prose in a note that has footnotes: on pull, a bracketed number that matches an existing footnote is treated as that footnote's marker. Use `(2)` or `no. 2` instead.
 
 ## The rest of the academic toolkit
 

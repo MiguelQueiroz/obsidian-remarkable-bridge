@@ -22644,7 +22644,23 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     this.changedDocs = /* @__PURE__ */ new Set();
     this.ribbonEl = null;
     this.statusEl = null;
+    this.unloaded = false;
+    /** Paths or doc ids with an operation in flight; blocks double-triggers. */
+    this.busy = /* @__PURE__ */ new Set();
     this.storeInstance = null;
+  }
+  /** Run `fn` unless `key` is already busy; guards double-clicks and races. */
+  async guarded(key, fn) {
+    if (this.busy.has(key)) {
+      new import_obsidian.Notice("Still working on that one\u2026", 3e3);
+      return;
+    }
+    this.busy.add(key);
+    try {
+      await fn();
+    } finally {
+      this.busy.delete(key);
+    }
   }
   store() {
     const root = this.settings.storePath || defaultStorePath();
@@ -22755,6 +22771,23 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
       name: "Open reMarkable dashboard",
       callback: () => void this.activateDashboard()
     });
+    this.addCommand({
+      id: "pull-all",
+      name: "Pull everything back from reMarkable",
+      checkCallback: (checking) => {
+        const outs = Object.values(this.settings.checkouts);
+        if (!outs.length) return false;
+        if (!checking) {
+          void (async () => {
+            for (const c of [...outs]) {
+              const file = this.app.vault.getFileByPath(c.path);
+              if (file) await this.pullNote(file);
+            }
+          })();
+        }
+        return true;
+      }
+    });
     this.ribbonEl = this.addRibbonIcon("tablet", "reMarkable: send or pull the active note", () => {
       const file = this.app.workspace.getActiveFile();
       if (!file) {
@@ -22799,6 +22832,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     this.updateStatus();
   }
   onunload() {
+    this.unloaded = true;
     this.stopWatch?.();
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       leaf.view.containerEl.querySelector(".rm-bridge-banner")?.remove();
@@ -22842,6 +22876,24 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     return m ? { fm: m[0], body: raw.slice(m[0].length) } : { fm: "", body: raw };
   }
   async sendNote(file) {
+    await this.guarded(file.path, () => this.sendNoteInner(file));
+  }
+  async pullNote(file) {
+    await this.guarded(file.path, () => this.pullNoteInner(file));
+  }
+  async sendPdf(file) {
+    await this.guarded(file.path, () => this.sendPdfInner(file));
+  }
+  async pullHighlights(file) {
+    await this.guarded(file.path, () => this.pullHighlightsInner(file));
+  }
+  async importPdf(docId, name) {
+    await this.guarded(docId, () => this.importPdfInner(docId, name));
+  }
+  async importDocument(docId, name) {
+    await this.guarded(docId, () => this.importDocumentInner(docId, name));
+  }
+  async sendNoteInner(file) {
     try {
       const store = this.store();
       const check = await store.verify();
@@ -22867,11 +22919,11 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
       if (!(e instanceof StoreError)) console.error(e);
     }
   }
-  async pullNote(file) {
+  async pullNoteInner(file) {
     const checkout = this.checkoutForFile(file);
     if (!checkout) return;
     if (checkout.kind === "pdf") {
-      await this.pullHighlights(file);
+      await this.pullHighlightsInner(file);
       return;
     }
     try {
@@ -22894,7 +22946,9 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
       warnings.push(...pullWarnings);
       const raw = await this.app.vault.read(file);
       const { fm, body } = this.splitFrontmatter(raw);
+      let conflicted = false;
       if (checkout.sentHash !== void 0 && bodyHash(body) !== checkout.sentHash) {
+        conflicted = true;
         const conflictPath = file.path.replace(/\.md$/, " (from reMarkable).md");
         const existing = this.app.vault.getFileByPath(conflictPath);
         if (existing) await this.app.vault.process(existing, () => markdown);
@@ -22912,7 +22966,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
       if (hasInk && this.settings.trashAfterPull) {
         warnings.push("Device copy kept (not archived) because it contains handwriting.");
       }
-      if (this.settings.trashAfterPull && !hasInk) await store.trashDocument(checkout.docId);
+      if (this.settings.trashAfterPull && !hasInk && !conflicted) await store.trashDocument(checkout.docId);
       delete this.settings.checkouts[checkout.docId];
       this.changedDocs.delete(checkout.docId);
       await this.saveData(this.settings);
@@ -22957,7 +23011,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     window.setTimeout(() => this.refreshBanners(), 1200);
   }
   /** Send a vault PDF to the device for reading and annotation. */
-  async sendPdf(file) {
+  async sendPdfInner(file) {
     try {
       const store = this.store();
       const check = await store.verify();
@@ -22982,7 +23036,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     }
   }
   /** Pull device annotations of a tracked PDF: baked-ink copy + highlights note. */
-  async pullHighlights(file) {
+  async pullHighlightsInner(file) {
     const checkout = this.checkoutForFile(file);
     if (!checkout) return;
     try {
@@ -23019,7 +23073,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
         }
         const target = file.path.replace(/\.pdf$/i, " highlights.md");
         const existing = this.app.vault.getFileByPath(target);
-        if (existing) await this.app.vault.modify(existing, lines.join("\n"));
+        if (existing) await this.app.vault.process(existing, () => lines.join("\n"));
         else await this.app.vault.create(target, lines.join("\n"));
         const total = perPage.reduce((n, p) => n + p.highlights.length, 0);
         made.push(`${total} text highlights`);
@@ -23036,7 +23090,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     }
   }
   /** Import a device PDF (and its highlights) into the vault. */
-  async importPdf(docId, name) {
+  async importPdfInner(docId, name) {
     try {
       const store = this.store();
       let bytes = await store.readPdfBytes(docId);
@@ -23078,7 +23132,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     }
   }
   /** Import any device document's typed text as a new vault note. */
-  async importDocument(docId, name) {
+  async importDocumentInner(docId, name) {
     try {
       const store = this.store();
       const { pages } = await store.readTextDocument(docId);
@@ -23112,6 +23166,7 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     }
   }
   refreshBanners() {
+    if (this.unloaded) return;
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
       if (!(view instanceof import_obsidian.MarkdownView)) continue;

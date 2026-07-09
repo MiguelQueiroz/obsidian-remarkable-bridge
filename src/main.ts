@@ -66,8 +66,25 @@ export default class RemarkableBridge extends Plugin {
   changedDocs = new Set<string>();
   private ribbonEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
+  private unloaded = false;
+  /** Paths or doc ids with an operation in flight; blocks double-triggers. */
+  private busy = new Set<string>();
 
   private storeInstance: RemarkableStore | null = null;
+
+  /** Run `fn` unless `key` is already busy; guards double-clicks and races. */
+  private async guarded(key: string, fn: () => Promise<void>) {
+    if (this.busy.has(key)) {
+      new Notice("Still working on that one…", 3000);
+      return;
+    }
+    this.busy.add(key);
+    try {
+      await fn();
+    } finally {
+      this.busy.delete(key);
+    }
+  }
 
   store(): RemarkableStore {
     const root = this.settings.storePath || defaultStorePath();
@@ -199,6 +216,24 @@ export default class RemarkableBridge extends Plugin {
       callback: () => void this.activateDashboard(),
     });
 
+    this.addCommand({
+      id: "pull-all",
+      name: "Pull everything back from reMarkable",
+      checkCallback: (checking) => {
+        const outs = Object.values(this.settings.checkouts);
+        if (!outs.length) return false;
+        if (!checking) {
+          void (async () => {
+            for (const c of [...outs]) {
+              const file = this.app.vault.getFileByPath(c.path);
+              if (file) await this.pullNote(file);
+            }
+          })();
+        }
+        return true;
+      },
+    });
+
     // Ribbon: context-aware send/pull on the active note, plus the dashboard.
     this.ribbonEl = this.addRibbonIcon("tablet", "reMarkable: send or pull the active note", () => {
       const file = this.app.workspace.getActiveFile();
@@ -251,6 +286,7 @@ export default class RemarkableBridge extends Plugin {
   }
 
   onunload() {
+    this.unloaded = true;
     this.stopWatch?.();
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       leaf.view.containerEl.querySelector(".rm-bridge-banner")?.remove();
@@ -297,7 +333,32 @@ export default class RemarkableBridge extends Plugin {
     return m ? { fm: m[0], body: raw.slice(m[0].length) } : { fm: "", body: raw };
   }
 
+
   async sendNote(file: TFile) {
+    await this.guarded(file.path, () => this.sendNoteInner(file));
+  }
+
+  async pullNote(file: TFile) {
+    await this.guarded(file.path, () => this.pullNoteInner(file));
+  }
+
+  async sendPdf(file: TFile) {
+    await this.guarded(file.path, () => this.sendPdfInner(file));
+  }
+
+  async pullHighlights(file: TFile) {
+    await this.guarded(file.path, () => this.pullHighlightsInner(file));
+  }
+
+  async importPdf(docId: string, name: string) {
+    await this.guarded(docId, () => this.importPdfInner(docId, name));
+  }
+
+  async importDocument(docId: string, name: string) {
+    await this.guarded(docId, () => this.importDocumentInner(docId, name));
+  }
+
+  private async sendNoteInner(file: TFile) {
     try {
       const store = this.store();
       const check = await store.verify();
@@ -325,11 +386,11 @@ export default class RemarkableBridge extends Plugin {
     }
   }
 
-  async pullNote(file: TFile) {
+  private async pullNoteInner(file: TFile) {
     const checkout = this.checkoutForFile(file);
     if (!checkout) return;
     if (checkout.kind === "pdf") {
-      await this.pullHighlights(file);
+      await this.pullHighlightsInner(file);
       return;
     }
     try {
@@ -356,7 +417,9 @@ export default class RemarkableBridge extends Plugin {
 
       // The editor lock can't stop vault-level writers (sync plugins, git).
       // If the note changed underneath the checkout, keep both versions.
+      let conflicted = false;
       if (checkout.sentHash !== undefined && bodyHash(body) !== checkout.sentHash) {
+        conflicted = true;
         const conflictPath = file.path.replace(/\.md$/, " (from reMarkable).md");
         const existing = this.app.vault.getFileByPath(conflictPath);
         if (existing) await this.app.vault.process(existing, () => markdown);
@@ -376,7 +439,9 @@ export default class RemarkableBridge extends Plugin {
       if (hasInk && this.settings.trashAfterPull) {
         warnings.push("Device copy kept (not archived) because it contains handwriting.");
       }
-      if (this.settings.trashAfterPull && !hasInk) await store.trashDocument(checkout.docId);
+      // Keep the device copy on conflict too: the vault note did not actually
+      // receive the reMarkable content, so it must stay recoverable.
+      if (this.settings.trashAfterPull && !hasInk && !conflicted) await store.trashDocument(checkout.docId);
       delete this.settings.checkouts[checkout.docId];
       this.changedDocs.delete(checkout.docId);
       await this.saveData(this.settings);
@@ -429,7 +494,7 @@ export default class RemarkableBridge extends Plugin {
   }
 
   /** Send a vault PDF to the device for reading and annotation. */
-  async sendPdf(file: TFile) {
+  private async sendPdfInner(file: TFile) {
     try {
       const store = this.store();
       const check = await store.verify();
@@ -455,7 +520,7 @@ export default class RemarkableBridge extends Plugin {
   }
 
   /** Pull device annotations of a tracked PDF: baked-ink copy + highlights note. */
-  async pullHighlights(file: TFile) {
+  private async pullHighlightsInner(file: TFile) {
     const checkout = this.checkoutForFile(file);
     if (!checkout) return;
     try {
@@ -494,7 +559,7 @@ export default class RemarkableBridge extends Plugin {
         }
         const target = file.path.replace(/\.pdf$/i, " highlights.md");
         const existing = this.app.vault.getFileByPath(target);
-        if (existing) await this.app.vault.modify(existing, lines.join("\n"));
+        if (existing) await this.app.vault.process(existing, () => lines.join("\n"));
         else await this.app.vault.create(target, lines.join("\n"));
         const total = perPage.reduce((n, p) => n + p.highlights.length, 0);
         made.push(`${total} text highlights`);
@@ -513,7 +578,7 @@ export default class RemarkableBridge extends Plugin {
   }
 
   /** Import a device PDF (and its highlights) into the vault. */
-  async importPdf(docId: string, name: string) {
+  private async importPdfInner(docId: string, name: string) {
     try {
       const store = this.store();
       let bytes = await store.readPdfBytes(docId);
@@ -557,7 +622,7 @@ export default class RemarkableBridge extends Plugin {
   }
 
   /** Import any device document's typed text as a new vault note. */
-  async importDocument(docId: string, name: string) {
+  private async importDocumentInner(docId: string, name: string) {
     try {
       const store = this.store();
       const { pages } = await store.readTextDocument(docId);
@@ -592,6 +657,7 @@ export default class RemarkableBridge extends Plugin {
   }
 
   refreshBanners() {
+    if (this.unloaded) return;
     for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
       const view = leaf.view;
       if (!(view instanceof MarkdownView)) continue;
