@@ -1,0 +1,9 @@
+{
+  "id": "remarkable-bridge",
+  "name": "reMarkable Bridge",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Send notes to a reMarkable as typed text, edit them there with the Type Folio, and pull the edits back. Uses the official desktop app's local store; no Connect subscription needed. Unofficial; not affiliated with reMarkable AS.",
+  "author": "kebl3541",
+  "isDesktopOnly": true
+}
