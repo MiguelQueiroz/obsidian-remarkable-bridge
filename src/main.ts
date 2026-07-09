@@ -197,15 +197,14 @@ export default class RemarkableBridge extends Plugin {
 
     this.addCommand({
       id: "import-from-remarkable",
-      name: "Import a reMarkable note into the vault",
-      callback: async () => {
-        try {
-          const snap = await this.store().snapshot();
-          new ImportModal(this.app, this, snap).open();
-        } catch (e) {
-          new Notice(`Cannot read the reMarkable store: ${e instanceof Error ? e.message : e}`, 8000);
-        }
-      },
+      name: "Import from reMarkable",
+      callback: () => void this.openImportPicker(),
+    });
+
+    this.addCommand({
+      id: "export-to-remarkable",
+      name: "Export to reMarkable",
+      callback: () => new ExportModal(this.app, this).open(),
     });
 
     this.addCommand({
@@ -243,80 +242,35 @@ export default class RemarkableBridge extends Plugin {
     });
   }
 
-  /** The reMarkable menu: everything in one dropdown, nothing persistent. */
+  /** Two choices only; each opens a searchable list. */
   openMenu(evt: MouseEvent) {
     const menu = new Menu();
-    const file = this.app.workspace.getActiveFile();
-
-    if (file && (file.extension === "md" || file.extension === "pdf")) {
-      const out = this.checkoutForFile(file);
-      if (file.extension === "md") {
-        menu.addItem((i) =>
-          i
-            .setTitle(out ? `Pull "${file.basename}" back` : `Send "${file.basename}" to reMarkable`)
-            .setIcon(out ? "download" : "upload")
-            .onClick(() => void (out ? this.pullNote(file) : this.sendNote(file)))
-        );
-      } else {
-        menu.addItem((i) =>
-          i
-            .setTitle(out ? `Pull annotations of "${file.basename}"` : `Send "${file.basename}" to reMarkable`)
-            .setIcon(out ? "download" : "upload")
-            .onClick(() => void (out ? this.pullHighlights(file) : this.sendPdf(file)))
-        );
-      }
-      menu.addSeparator();
-    }
-
-    const outs = Object.values(this.settings.checkouts).filter((c) => !file || c.path !== file.path);
-    for (const c of outs.slice(0, 8)) {
-      const changed = this.changedDocs.has(c.docId);
-      const name = c.path.split("/").pop() ?? c.path;
-      menu.addItem((i) =>
-        i
-          .setTitle(changed ? `${name} — ready to pull` : `${name} — on the device`)
-          .setIcon(changed ? "download" : "clock")
-          .onClick(() => {
-            const f = this.app.vault.getFileByPath(c.path);
-            if (f) void this.pullNote(f);
-          })
-      );
-    }
-    if (Object.keys(this.settings.checkouts).length > 1) {
-      menu.addItem((i) =>
-        i
-          .setTitle(`Pull everything back (${Object.keys(this.settings.checkouts).length})`)
-          .setIcon("download-cloud")
-          .onClick(() => {
-            void (async () => {
-              for (const c of Object.values(this.settings.checkouts)) {
-                const f = this.app.vault.getFileByPath(c.path);
-                if (f) await this.pullNote(f);
-              }
-            })();
-          })
-      );
-    }
-    if (outs.length || Object.keys(this.settings.checkouts).length > 1) menu.addSeparator();
-
     menu.addItem((i) =>
       i
         .setTitle("Import from reMarkable…")
-        .setIcon("import")
-        .onClick(async () => {
-          const waiting = new Notice("Reading device library…", 0);
-          try {
-            const snap = await this.store().snapshot();
-            new ImportModal(this.app, this, snap).open();
-          } catch (e) {
-            new Notice(`Cannot read the reMarkable store: ${e instanceof Error ? e.message : e}`, 8000);
-          } finally {
-            waiting.hide();
-          }
-        })
+        .setIcon("download")
+        .onClick(() => void this.openImportPicker())
     );
-
+    menu.addItem((i) =>
+      i
+        .setTitle("Export to reMarkable…")
+        .setIcon("upload")
+        .onClick(() => new ExportModal(this.app, this).open())
+    );
     menu.showAtMouseEvent(evt);
+  }
+
+  /** Imports: notes to pull back first, then the device library. */
+  async openImportPicker() {
+    const waiting = new Notice("Reading device library…", 0);
+    try {
+      const snap = await this.store().snapshot();
+      new ImportModal(this.app, this, snap).open();
+    } catch (e) {
+      new Notice(`Cannot read the reMarkable store: ${e instanceof Error ? e.message : e}`, 8000);
+    } finally {
+      waiting.hide();
+    }
   }
 
   updateStatus() {
@@ -745,22 +699,71 @@ export default class RemarkableBridge extends Plugin {
 /* Import picker                                                       */
 /* ------------------------------------------------------------------ */
 
-class ImportModal extends FuzzySuggestModal<{ id: string; name: string; parent: string; fileType: string }> {
+type ImportItem =
+  | { kind: "pull"; checkout: Checkout; ready: boolean }
+  | { kind: "device"; id: string; name: string; parent: string; fileType: string };
+
+class ImportModal extends FuzzySuggestModal<ImportItem> {
   constructor(app: App, private plugin: RemarkableBridge, private snap: import("./store").StoreSnapshot) {
     super(app);
-    this.setPlaceholder("Import a reMarkable document…");
+    this.setPlaceholder("Import from reMarkable…");
   }
-  getItems() {
-    return this.snap.docs.filter((d) => d.fileType === "pdf" || d.fileType === "notebook" || d.fileType === "");
+  getItems(): ImportItem[] {
+    const checkouts = Object.values(this.plugin.settings.checkouts)
+      .filter((c) => this.app.vault.getFileByPath(c.path))
+      .map((c) => ({ kind: "pull" as const, checkout: c, ready: this.plugin.changedDocs.has(c.docId) }))
+      .sort((a, b) => Number(b.ready) - Number(a.ready));
+    const outIds = new Set(checkouts.map((c) => c.checkout.docId));
+    const device = this.snap.docs
+      .filter((d) => !outIds.has(d.id) && (d.fileType === "pdf" || d.fileType === "notebook" || d.fileType === ""))
+      .map((d) => ({ kind: "device" as const, ...d }));
+    return [...checkouts, ...device];
   }
-  getItemText(item: { name: string; parent: string; fileType: string }) {
+  getItemText(item: ImportItem) {
+    if (item.kind === "pull") {
+      const name = item.checkout.path.split("/").pop() ?? item.checkout.path;
+      return item.ready ? `Pull back: ${name} (edited on device)` : `Pull back: ${name}`;
+    }
     const folder = this.snap.folders.get(item.parent) ?? "";
     const prefix = item.fileType === "pdf" ? "[PDF] " : "";
     return prefix + (folder ? `${folder}/${item.name}` : item.name);
   }
-  onChooseItem(item: { id: string; name: string; fileType: string }) {
+  onChooseItem(item: ImportItem) {
+    if (item.kind === "pull") {
+      const file = this.app.vault.getFileByPath(item.checkout.path);
+      if (file) void this.plugin.pullNote(file);
+      return;
+    }
     if (item.fileType === "pdf") void this.plugin.importPdf(item.id, item.name);
     else void this.plugin.importDocument(item.id, item.name);
+  }
+}
+
+class ExportModal extends FuzzySuggestModal<TFile> {
+  constructor(app: App, private plugin: RemarkableBridge) {
+    super(app);
+    this.setPlaceholder("Export a note or PDF to reMarkable…");
+  }
+  getItems(): TFile[] {
+    const outPaths = new Set(Object.values(this.plugin.settings.checkouts).map((c) => c.path));
+    const active = this.app.workspace.getActiveFile();
+    const files = this.app.vault
+      .getFiles()
+      .filter((f) => (f.extension === "md" || f.extension === "pdf") && !outPaths.has(f.path))
+      .sort((a, b) => b.stat.mtime - a.stat.mtime);
+    if (active && !outPaths.has(active.path) && (active.extension === "md" || active.extension === "pdf")) {
+      return [active, ...files.filter((f) => f.path !== active.path)];
+    }
+    return files;
+  }
+  getItemText(file: TFile) {
+    const active = this.app.workspace.getActiveFile();
+    const label = file.extension === "pdf" ? `[PDF] ${file.path}` : file.path;
+    return file.path === active?.path ? `${label} (current note)` : label;
+  }
+  onChooseItem(file: TFile) {
+    if (file.extension === "pdf") void this.plugin.sendPdf(file);
+    else void this.plugin.sendNote(file);
   }
 }
 

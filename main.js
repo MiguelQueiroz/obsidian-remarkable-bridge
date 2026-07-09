@@ -22756,15 +22756,13 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     );
     this.addCommand({
       id: "import-from-remarkable",
-      name: "Import a reMarkable note into the vault",
-      callback: async () => {
-        try {
-          const snap = await this.store().snapshot();
-          new ImportModal(this.app, this, snap).open();
-        } catch (e) {
-          new import_obsidian.Notice(`Cannot read the reMarkable store: ${e instanceof Error ? e.message : e}`, 8e3);
-        }
-      }
+      name: "Import from reMarkable",
+      callback: () => void this.openImportPicker()
+    });
+    this.addCommand({
+      id: "export-to-remarkable",
+      name: "Export to reMarkable",
+      callback: () => new ExportModal(this.app, this).open()
     });
     this.addCommand({
       id: "pull-all",
@@ -22795,61 +22793,28 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
       this.refreshBanners();
     });
   }
-  /** The reMarkable menu: everything in one dropdown, nothing persistent. */
+  /** Two choices only; each opens a searchable list. */
   openMenu(evt) {
     const menu = new import_obsidian.Menu();
-    const file = this.app.workspace.getActiveFile();
-    if (file && (file.extension === "md" || file.extension === "pdf")) {
-      const out = this.checkoutForFile(file);
-      if (file.extension === "md") {
-        menu.addItem(
-          (i) => i.setTitle(out ? `Pull "${file.basename}" back` : `Send "${file.basename}" to reMarkable`).setIcon(out ? "download" : "upload").onClick(() => void (out ? this.pullNote(file) : this.sendNote(file)))
-        );
-      } else {
-        menu.addItem(
-          (i) => i.setTitle(out ? `Pull annotations of "${file.basename}"` : `Send "${file.basename}" to reMarkable`).setIcon(out ? "download" : "upload").onClick(() => void (out ? this.pullHighlights(file) : this.sendPdf(file)))
-        );
-      }
-      menu.addSeparator();
-    }
-    const outs = Object.values(this.settings.checkouts).filter((c) => !file || c.path !== file.path);
-    for (const c of outs.slice(0, 8)) {
-      const changed = this.changedDocs.has(c.docId);
-      const name = c.path.split("/").pop() ?? c.path;
-      menu.addItem(
-        (i) => i.setTitle(changed ? `${name} \u2014 ready to pull` : `${name} \u2014 on the device`).setIcon(changed ? "download" : "clock").onClick(() => {
-          const f = this.app.vault.getFileByPath(c.path);
-          if (f) void this.pullNote(f);
-        })
-      );
-    }
-    if (Object.keys(this.settings.checkouts).length > 1) {
-      menu.addItem(
-        (i) => i.setTitle(`Pull everything back (${Object.keys(this.settings.checkouts).length})`).setIcon("download-cloud").onClick(() => {
-          void (async () => {
-            for (const c of Object.values(this.settings.checkouts)) {
-              const f = this.app.vault.getFileByPath(c.path);
-              if (f) await this.pullNote(f);
-            }
-          })();
-        })
-      );
-    }
-    if (outs.length || Object.keys(this.settings.checkouts).length > 1) menu.addSeparator();
     menu.addItem(
-      (i) => i.setTitle("Import from reMarkable\u2026").setIcon("import").onClick(async () => {
-        const waiting = new import_obsidian.Notice("Reading device library\u2026", 0);
-        try {
-          const snap = await this.store().snapshot();
-          new ImportModal(this.app, this, snap).open();
-        } catch (e) {
-          new import_obsidian.Notice(`Cannot read the reMarkable store: ${e instanceof Error ? e.message : e}`, 8e3);
-        } finally {
-          waiting.hide();
-        }
-      })
+      (i) => i.setTitle("Import from reMarkable\u2026").setIcon("download").onClick(() => void this.openImportPicker())
+    );
+    menu.addItem(
+      (i) => i.setTitle("Export to reMarkable\u2026").setIcon("upload").onClick(() => new ExportModal(this.app, this).open())
     );
     menu.showAtMouseEvent(evt);
+  }
+  /** Imports: notes to pull back first, then the device library. */
+  async openImportPicker() {
+    const waiting = new import_obsidian.Notice("Reading device library\u2026", 0);
+    try {
+      const snap = await this.store().snapshot();
+      new ImportModal(this.app, this, snap).open();
+    } catch (e) {
+      new import_obsidian.Notice(`Cannot read the reMarkable store: ${e instanceof Error ? e.message : e}`, 8e3);
+    } finally {
+      waiting.hide();
+    }
   }
   updateStatus() {
     if (!this.statusEl) return;
@@ -23230,19 +23195,56 @@ var ImportModal = class extends import_obsidian.FuzzySuggestModal {
     super(app);
     this.plugin = plugin;
     this.snap = snap;
-    this.setPlaceholder("Import a reMarkable document\u2026");
+    this.setPlaceholder("Import from reMarkable\u2026");
   }
   getItems() {
-    return this.snap.docs.filter((d) => d.fileType === "pdf" || d.fileType === "notebook" || d.fileType === "");
+    const checkouts = Object.values(this.plugin.settings.checkouts).filter((c) => this.app.vault.getFileByPath(c.path)).map((c) => ({ kind: "pull", checkout: c, ready: this.plugin.changedDocs.has(c.docId) })).sort((a, b) => Number(b.ready) - Number(a.ready));
+    const outIds = new Set(checkouts.map((c) => c.checkout.docId));
+    const device = this.snap.docs.filter((d) => !outIds.has(d.id) && (d.fileType === "pdf" || d.fileType === "notebook" || d.fileType === "")).map((d) => ({ kind: "device", ...d }));
+    return [...checkouts, ...device];
   }
   getItemText(item) {
+    if (item.kind === "pull") {
+      const name = item.checkout.path.split("/").pop() ?? item.checkout.path;
+      return item.ready ? `Pull back: ${name} (edited on device)` : `Pull back: ${name}`;
+    }
     const folder = this.snap.folders.get(item.parent) ?? "";
     const prefix = item.fileType === "pdf" ? "[PDF] " : "";
     return prefix + (folder ? `${folder}/${item.name}` : item.name);
   }
   onChooseItem(item) {
+    if (item.kind === "pull") {
+      const file = this.app.vault.getFileByPath(item.checkout.path);
+      if (file) void this.plugin.pullNote(file);
+      return;
+    }
     if (item.fileType === "pdf") void this.plugin.importPdf(item.id, item.name);
     else void this.plugin.importDocument(item.id, item.name);
+  }
+};
+var ExportModal = class extends import_obsidian.FuzzySuggestModal {
+  constructor(app, plugin) {
+    super(app);
+    this.plugin = plugin;
+    this.setPlaceholder("Export a note or PDF to reMarkable\u2026");
+  }
+  getItems() {
+    const outPaths = new Set(Object.values(this.plugin.settings.checkouts).map((c) => c.path));
+    const active = this.app.workspace.getActiveFile();
+    const files = this.app.vault.getFiles().filter((f) => (f.extension === "md" || f.extension === "pdf") && !outPaths.has(f.path)).sort((a, b) => b.stat.mtime - a.stat.mtime);
+    if (active && !outPaths.has(active.path) && (active.extension === "md" || active.extension === "pdf")) {
+      return [active, ...files.filter((f) => f.path !== active.path)];
+    }
+    return files;
+  }
+  getItemText(file) {
+    const active = this.app.workspace.getActiveFile();
+    const label = file.extension === "pdf" ? `[PDF] ${file.path}` : file.path;
+    return file.path === active?.path ? `${label} (current note)` : label;
+  }
+  onChooseItem(file) {
+    if (file.extension === "pdf") void this.plugin.sendPdf(file);
+    else void this.plugin.sendNote(file);
   }
 };
 var BridgeSettingTab = class extends import_obsidian.PluginSettingTab {
