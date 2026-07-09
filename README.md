@@ -24,7 +24,18 @@ The plugin never talks to reMarkable's cloud. It reads and writes documents in t
 - Text typed on the tablet with the Type Folio syncs back and extracts correctly. The full round trip is confirmed.
 - Note: Paper Pro firmware writes some block types newer than rmscene fully supports (it warns but still extracts text). Any rewrite of an existing page must preserve unknown blocks byte for byte.
 
-## Planned design
+## Features
+
+- **Send / pull / force-release**: command palette, right-click menu, ribbon button (context-aware: sends a free note, pulls a checked-out one), or the dashboard.
+- **Dashboard** (right sidebar): checked-out notes with pull buttons, plus a browser of every document on the device with one-click import of its typed text into the vault.
+- **Import**: "Import a reMarkable note into the vault" turns any typed-text document from the device into a new note, no check-out needed. Notes drafted spontaneously on the tablet flow into Obsidian.
+- **Check-out banner and lock**: a checked-out note shows a banner and refuses edits in Obsidian until pulled back (toggleable).
+- **Watcher**: the plugin sees device edits arrive on the Mac and offers to pull, or pulls automatically if auto-pull is enabled.
+- **Status bar**: `rM: 2 out, 1 ready` at a glance; click to open the dashboard.
+- **Footnote workflow**: see [docs/FOOTNOTES.md](docs/FOOTNOTES.md).
+- **Safety**: never deletes device data (archiving means the device trash), keeps device copies that contain handwriting, and refuses to write if the store layout looks unfamiliar.
+
+## Design
 
 Check-out/check-in model, to avoid merge conflicts:
 
