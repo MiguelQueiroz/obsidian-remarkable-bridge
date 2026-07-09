@@ -1,8 +1,29 @@
-# Obsidian reMarkable Bridge
+# reMarkable Bridge
 
-An Obsidian plugin for sending notes to a reMarkable Paper Pro, editing them there as typed text with the Type Folio keyboard, and pulling the edited text back into the vault. PDFs travel too: send them for reading, pull them back with your ink baked in and text highlights extracted.
+[![Downloads](https://img.shields.io/github/downloads/kebl3541/obsidian-remarkable-bridge/total?style=flat&logo=github&label=Downloads&color=success&cacheSeconds=3600)](https://github.com/kebl3541/obsidian-remarkable-bridge/releases)
+[![GitHub stars](https://img.shields.io/github/stars/kebl3541/obsidian-remarkable-bridge?style=flat&logo=github&label=Stars&cacheSeconds=300)](https://github.com/kebl3541/obsidian-remarkable-bridge/stargazers)
+[![Latest release](https://img.shields.io/github/v/release/kebl3541/obsidian-remarkable-bridge?style=flat&label=Release&cacheSeconds=3600)](https://github.com/kebl3541/obsidian-remarkable-bridge/releases/latest)
 
-This is an unofficial project. It is not affiliated with or endorsed by reMarkable AS. It requires no Connect subscription and never talks to reMarkable's cloud: the official desktop app does all the syncing.
+Write in Obsidian, edit on paper. Send a note to your reMarkable, type on it
+with the Type Folio — footnotes included — and pull the edits back as clean
+markdown. Send a PDF, mark it up with the pen, and pull it back with your ink
+baked onto the pages and every text highlight extracted. No Connect
+subscription, no cloud hacking: the official desktop app does all the syncing.
+
+<p align="center">If this plugin adds value for you and you would like to help support
+continued development, please use the buttons below:</p>
+
+<p align="center">
+<a href="https://www.paypal.com/donate/?business=berlin.philosophy%40gmail.com&no_recurring=0&currency_code=EUR"><img src="https://www.paypalobjects.com/webstatic/mktg/Logo/pp-logo-200px.png" alt="PayPal" height="42"></a>
+&nbsp;&nbsp;
+<a href="https://buymeacoffee.com/philosophizer"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy me a coffee" height="52"></a>
+</p>
+
+<p align="center"><strong><a href="https://buymeacoffee.com/philosophizer">☕ Buy me a coffee</a></strong>&nbsp;&nbsp;·&nbsp;&nbsp;<strong><a href="https://www.paypal.com/donate/?business=berlin.philosophy%40gmail.com&no_recurring=0&currency_code=EUR">💙 Donate via PayPal</a></strong></p>
+
+<p align="center">If you like this plugin or find it useful, please consider giving it a <a href="https://github.com/kebl3541/obsidian-remarkable-bridge">star</a> <a href="https://github.com/kebl3541/obsidian-remarkable-bridge"><img src="https://img.shields.io/github/stars/kebl3541/obsidian-remarkable-bridge?style=social&cacheSeconds=300" alt="GitHub Repo stars"></a> on GitHub!</p>
+
+This is an unofficial project. It is not affiliated with or endorsed by reMarkable AS.
 
 ## Status
 
@@ -66,3 +87,16 @@ Headings, bold, italic, and bullets survive the round trip. Code blocks, links, 
 
 - The desktop app's storage layout is undocumented and could change in an app update. The plugin must detect unknown layouts and refuse to write rather than guess.
 - Editing the same document on both sides between syncs will fork or clobber; the check-out model exists to prevent this.
+
+## Support
+
+If this plugin adds value for you and you would like to help support continued
+development, please use the buttons below:
+
+<a href="https://www.paypal.com/donate/?business=berlin.philosophy%40gmail.com&no_recurring=0&currency_code=EUR"><img src="https://www.paypalobjects.com/webstatic/mktg/Logo/pp-logo-200px.png" alt="PayPal" height="42"></a>
+&nbsp;&nbsp;
+<a href="https://buymeacoffee.com/philosophizer"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy me a coffee" height="52"></a>
+
+## License
+
+GPL-3.0-or-later. Third-party attributions in [NOTICES.md](NOTICES.md).
