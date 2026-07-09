@@ -438,16 +438,22 @@ export class RemarkableStore {
       return cachedIds;
     };
     try {
+      // During a full app resync this fires thousands of times per second on
+      // the main thread, so the per-event path must be a slice and a Set
+      // lookup, nothing more. Document ids are always the first 36 chars of
+      // the path ("<uuid>.metadata", "<uuid>/<page>.rm").
       watcher = fs.watch(this.root, { recursive: true }, (_event, filename) => {
         if (!filename) return;
-        const docId = String(filename).split(path.sep)[0].replace(/\.(metadata|content|local|pagedata)$/, "");
+        const docId = String(filename).slice(0, 36);
         if (!tracked().has(docId)) return;
         pending.add(docId);
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(() => {
-          for (const id of pending) onChange(id);
-          pending.clear();
-        }, 2000);
+        if (timer === null) {
+          timer = setTimeout(() => {
+            timer = null;
+            for (const id of pending) onChange(id);
+            pending.clear();
+          }, 2000);
+        }
       });
     } catch {
       return () => {};

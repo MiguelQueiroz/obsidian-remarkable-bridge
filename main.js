@@ -22410,14 +22410,16 @@ var RemarkableStore = class {
     try {
       watcher = fs.watch(this.root, { recursive: true }, (_event, filename) => {
         if (!filename) return;
-        const docId = String(filename).split(path.sep)[0].replace(/\.(metadata|content|local|pagedata)$/, "");
+        const docId = String(filename).slice(0, 36);
         if (!tracked().has(docId)) return;
         pending.add(docId);
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(() => {
-          for (const id2 of pending) onChange(id2);
-          pending.clear();
-        }, 2e3);
+        if (timer === null) {
+          timer = setTimeout(() => {
+            timer = null;
+            for (const id2 of pending) onChange(id2);
+            pending.clear();
+          }, 2e3);
+        }
       });
     } catch {
       return () => {
