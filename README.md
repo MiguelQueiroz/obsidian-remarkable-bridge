@@ -21,7 +21,8 @@ The plugin never talks to reMarkable's cloud. It reads and writes documents in t
 - Reading typed text out of real notebooks in the store works (via [rmscene](https://github.com/ricklupton/rmscene)).
 - Generating a typed-text notebook from scratch and injecting it into the store works. The desktop app accepts it, shows it, and syncs it to the Paper Pro.
 - Editing the injected document on the tablet works.
-- In progress: confirming the tablet's edits sync back down and read out correctly.
+- Text typed on the tablet with the Type Folio syncs back and extracts correctly. The full round trip is confirmed.
+- Note: Paper Pro firmware writes some block types newer than rmscene fully supports (it warns but still extracts text). Any rewrite of an existing page must preserve unknown blocks byte for byte.
 
 ## Planned design
 
