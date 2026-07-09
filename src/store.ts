@@ -174,6 +174,37 @@ export class RemarkableStore {
     return fs.existsSync(path.join(this.root, `${docId}.metadata`));
   }
 
+  /** List documents (not folders) in the store, newest first. */
+  listDocuments(): { id: string; name: string; parent: string; lastModified: number }[] {
+    const docs: { id: string; name: string; parent: string; lastModified: number }[] = [];
+    for (const f of fs.readdirSync(this.root)) {
+      if (!f.endsWith(".metadata")) continue;
+      try {
+        const meta = JSON.parse(fs.readFileSync(path.join(this.root, f), "utf8"));
+        if (meta.type !== "DocumentType" || meta.deleted || meta.parent === "trash") continue;
+        docs.push({
+          id: f.slice(0, -".metadata".length),
+          name: meta.visibleName,
+          parent: meta.parent ?? "",
+          lastModified: parseInt(meta.lastModified, 10) || 0,
+        });
+      } catch {
+        continue;
+      }
+    }
+    return docs.sort((a, b) => b.lastModified - a.lastModified);
+  }
+
+  /** Resolve a folder id to its visible name ("" for the root). */
+  folderName(folderId: string): string {
+    if (!folderId) return "";
+    try {
+      return this.readMetadata(folderId).visibleName;
+    } catch {
+      return "?";
+    }
+  }
+
   /** Read all pages of a document, in page order. */
   readTextDocument(docId: string): { pages: ParsedPage[]; lastModified: string } {
     const meta = this.readMetadata(docId);
