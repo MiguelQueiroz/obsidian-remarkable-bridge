@@ -71,6 +71,27 @@ Check-out/check-in, to avoid merge conflicts:
 
 The `.rm` v6 text codec is a TypeScript port of [rmscene](https://github.com/ricklupton/rmscene)'s logic, cross-checked against it on hundreds of real pages; pen rendering calibration follows [reMarkable Sync](https://github.com/TimDommett/Remarkable-Sync---Obsidian-Plugin). The original Python validation spikes live in `spike/`.
 
+## Filesystem access and privacy
+
+Obsidian's review tooling correctly flags this plugin for direct filesystem
+access, so here is exactly what it touches:
+
+- **Outside the vault, it reads and writes one directory only**: the reMarkable
+  desktop app's local document store (on macOS
+  `~/Library/Containers/com.remarkable.desktop/…/remarkable/desktop/`, or the
+  path you set in settings). All access goes through one module rooted at that
+  directory.
+- **What it does there**: reads documents, creates new documents, and edits a
+  document's metadata to move it to the device trash. It never hard-deletes
+  anything, never rewrites an existing page file, and refuses to write at all
+  if the directory layout doesn't look like a reMarkable store.
+- **Inside the vault** it uses only Obsidian's own vault API.
+- **Network**: the plugin makes no network requests of any kind. Syncing with
+  the tablet is done entirely by the official reMarkable app. Nothing leaves
+  your machine because of this plugin.
+
+`isDesktopOnly` is set accordingly; the plugin cannot run on mobile.
+
 ## Caveats
 
 - The desktop app's storage layout is undocumented and could change in an app update. The plugin must detect unknown layouts and refuse to write rather than guess.
