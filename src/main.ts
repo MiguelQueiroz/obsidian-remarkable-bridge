@@ -1,5 +1,6 @@
 import {
   App,
+  FileView,
   FuzzySuggestModal,
   MarkdownView,
   Menu,
@@ -182,8 +183,18 @@ export default class RemarkableBridge extends Plugin {
       })
     );
 
-    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.refreshBanners()));
-    this.registerEvent(this.app.workspace.on("layout-change", () => this.refreshBanners()));
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", () => {
+        this.refreshBanners();
+        this.ensureViewActions();
+      })
+    );
+    this.registerEvent(
+      this.app.workspace.on("layout-change", () => {
+        this.refreshBanners();
+        this.ensureViewActions();
+      })
+    );
     this.registerEvent(this.app.workspace.on("file-open", () => this.refreshBannersSoon()));
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
@@ -240,7 +251,59 @@ export default class RemarkableBridge extends Plugin {
       // Remove dashboard leaves from older versions of this plugin.
       this.app.workspace.detachLeavesOfType(DASHBOARD_VIEW);
       this.refreshBanners();
+      this.ensureViewActions();
     });
+  }
+
+  /** Tracks panes that already have the header button; views are recycled, files are not. */
+  private viewActionSeen = new WeakSet<FileView>();
+
+  /** One tablet button in each note/PDF pane header, next to the other view actions. */
+  private ensureViewActions() {
+    for (const type of ["markdown", "pdf"]) {
+      for (const leaf of this.app.workspace.getLeavesOfType(type)) {
+        const view = leaf.view;
+        if (!(view instanceof FileView) || this.viewActionSeen.has(view)) continue;
+        this.viewActionSeen.add(view);
+        view.addAction("tablet", "reMarkable", (evt) => this.openViewMenu(evt, view.file));
+      }
+    }
+  }
+
+  /** Header-button menu: act on this file first, then the global pickers. */
+  private openViewMenu(evt: MouseEvent, file: TFile | null) {
+    const menu = new Menu();
+    if (file?.extension === "md") {
+      const out = this.checkoutForFile(file);
+      menu.addItem((i) =>
+        i
+          .setTitle(out ? "Pull back from reMarkable" : "Send to reMarkable")
+          .setIcon("tablet")
+          .onClick(() => void (out ? this.pullNote(file) : this.sendNote(file)))
+      );
+    } else if (file?.extension === "pdf") {
+      const out = this.checkoutForFile(file);
+      menu.addItem((i) =>
+        i
+          .setTitle(out ? "Pull highlights from reMarkable" : "Send PDF to reMarkable")
+          .setIcon("tablet")
+          .onClick(() => void (out ? this.pullHighlights(file) : this.sendPdf(file)))
+      );
+    }
+    menu.addSeparator();
+    menu.addItem((i) =>
+      i
+        .setTitle("Import from reMarkable…")
+        .setIcon("download")
+        .onClick(() => void this.openImportPicker())
+    );
+    menu.addItem((i) =>
+      i
+        .setTitle("Export to reMarkable…")
+        .setIcon("upload")
+        .onClick(() => new ExportModal(this.app, this).open())
+    );
+    menu.showAtMouseEvent(evt);
   }
 
   /** Two choices only; each opens a searchable list. */

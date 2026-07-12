@@ -22727,6 +22727,8 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     /** Paths or doc ids with an operation in flight; blocks double-triggers. */
     this.busy = /* @__PURE__ */ new Set();
     this.storeInstance = null;
+    /** Tracks panes that already have the header button; views are recycled, files are not. */
+    this.viewActionSeen = /* @__PURE__ */ new WeakSet();
   }
   /** Run `fn` unless `key` is already busy; guards double-clicks and races. */
   async guarded(key, fn) {
@@ -22821,8 +22823,18 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
         return tr;
       })
     );
-    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.refreshBanners()));
-    this.registerEvent(this.app.workspace.on("layout-change", () => this.refreshBanners()));
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", () => {
+        this.refreshBanners();
+        this.ensureViewActions();
+      })
+    );
+    this.registerEvent(
+      this.app.workspace.on("layout-change", () => {
+        this.refreshBanners();
+        this.ensureViewActions();
+      })
+    );
     this.registerEvent(this.app.workspace.on("file-open", () => this.refreshBannersSoon()));
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
@@ -22871,7 +22883,42 @@ var RemarkableBridge = class extends import_obsidian.Plugin {
     this.app.workspace.onLayoutReady(() => {
       this.app.workspace.detachLeavesOfType(DASHBOARD_VIEW);
       this.refreshBanners();
+      this.ensureViewActions();
     });
+  }
+  /** One tablet button in each note/PDF pane header, next to the other view actions. */
+  ensureViewActions() {
+    for (const type of ["markdown", "pdf"]) {
+      for (const leaf of this.app.workspace.getLeavesOfType(type)) {
+        const view = leaf.view;
+        if (!(view instanceof import_obsidian.FileView) || this.viewActionSeen.has(view)) continue;
+        this.viewActionSeen.add(view);
+        view.addAction("tablet", "reMarkable", (evt) => this.openViewMenu(evt, view.file));
+      }
+    }
+  }
+  /** Header-button menu: act on this file first, then the global pickers. */
+  openViewMenu(evt, file) {
+    const menu = new import_obsidian.Menu();
+    if (file?.extension === "md") {
+      const out = this.checkoutForFile(file);
+      menu.addItem(
+        (i) => i.setTitle(out ? "Pull back from reMarkable" : "Send to reMarkable").setIcon("tablet").onClick(() => void (out ? this.pullNote(file) : this.sendNote(file)))
+      );
+    } else if (file?.extension === "pdf") {
+      const out = this.checkoutForFile(file);
+      menu.addItem(
+        (i) => i.setTitle(out ? "Pull highlights from reMarkable" : "Send PDF to reMarkable").setIcon("tablet").onClick(() => void (out ? this.pullHighlights(file) : this.sendPdf(file)))
+      );
+    }
+    menu.addSeparator();
+    menu.addItem(
+      (i) => i.setTitle("Import from reMarkable\u2026").setIcon("download").onClick(() => void this.openImportPicker())
+    );
+    menu.addItem(
+      (i) => i.setTitle("Export to reMarkable\u2026").setIcon("upload").onClick(() => new ExportModal(this.app, this).open())
+    );
+    menu.showAtMouseEvent(evt);
   }
   /** Two choices only; each opens a searchable list. */
   openMenu(evt) {

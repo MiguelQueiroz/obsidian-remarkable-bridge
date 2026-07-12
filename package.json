@@ -1,6 +1,6 @@
 {
   "name": "obsidian-remarkable-bridge",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Send Obsidian notes to a reMarkable as typed text and pull the edits back. Unofficial; not affiliated with reMarkable AS.",
   "main": "main.js",
   "scripts": {
