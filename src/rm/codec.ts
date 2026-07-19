@@ -7,15 +7,22 @@
  * existing pages are never rewritten in place.
  */
 
-export const HEADER_V6 = "reMarkable .lines file, version=6          ";
-
-export const TagType = {
-  ID: 0xf,
-  Length4: 0xc,
-  Byte8: 0x8,
-  Byte4: 0x4,
-  Byte1: 0x1,
+export const ParagraphStyle = {
+  BASIC: 0,
+  PLAIN: 1,
+  HEADING: 2,
+  BOLD: 3,          // bare code 3 = smallest heading (H3) on current firmware
+  BULLET: 4,
+  BULLET2: 5,
+  CHECKBOX: 6,
+  CHECKBOX_CHECKED: 7,
+  NUMBERED: 10,
+  // Internal pseudo-code: firmware encodes the MIDDLE heading (H2) as code 3
+  // plus extended fields (0x21 Byte1 = 2 [level], 0x34 Byte4 = 3).
+  // Never written to disk as a raw byte — see reader/writer special-casing.
+  HEADING2: 300,
 } as const;
+
 
 export interface CrdtId {
   part1: number;
@@ -380,16 +387,28 @@ export function parseRootText(payload: Uint8Array): RootText {
           const charId = r.crdtId();
           r.tag(1, TagType.ID);
           const timestamp = r.crdtId();
-          readSubblockBounded(r, 2, (r) => {
-            const seventeen = r.u8();
-            if (seventeen !== 17) throw new Error(`Unexpected format prefix ${seventeen}`);
-            const code = r.u8();
-            styles.set(idKey(charId), {
-              charId,
-              timestamp,
-              style: (code <= 7 ? code : ParagraphStyle.PLAIN) as ParagraphStyleValue,
-            });
+         readSubblockBounded(r, 2, (r, end) => {
+          const seventeen = r.u8();
+          if (seventeen !== 17) throw new Error(`Unexpected format prefix ${seventeen}`);
+          const code = r.u8();
+          // Newer firmware appends tagged fields: 0x21 = Byte1 (heading level),
+          // 0x34 = Byte4. Unknown trailing tags are left for the bounded-skip.
+          let level = 0;
+          while (r.pos < end) {
+            const t = r.u8();
+            if (t === 0x21) r.u8();
+            else if (t === 0x34) level = r.u32();
+            else break;
+          }
+          let style: number =
+            code <= 7 || code === ParagraphStyle.NUMBERED ? code : ParagraphStyle.PLAIN;
+          if (code === ParagraphStyle.BOLD && level >= 3) style = ParagraphStyle.HEADING2;
+          styles.set(idKey(charId), {
+            charId,
+            timestamp,
+            style: style as ParagraphStyleValue,
           });
+        });
         }
       });
     });
@@ -864,9 +883,19 @@ export function buildTextPage(paragraphs: OutParagraph[], authorUuid: string): U
           w.crdtId(s.charId);
           w.taggedId(1, s.timestamp);
           w.subblock(2, (w) => {
-            w.u8(17);
+          w.u8(17);
+          if (s.style === ParagraphStyle.HEADING2) {
+            // Byte-exact extended record captured from device output:
+            // 11 03 21 02 34 03 00 00 00
+            w.u8(ParagraphStyle.BOLD);
+            w.u8(0x21);
+            w.u8(2);
+            w.u8(0x34);
+            w.u32(3);
+          } else {
             w.u8(s.style);
-          });
+          }
+        });
         }
       });
     });
