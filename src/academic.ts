@@ -105,15 +105,29 @@ export function markdownToDevice(body: string, appendCheatSheet = false): SendRe
     let style: number = ParagraphStyle.PLAIN;
     let rest = line;
     const heading = line.match(/^(#{1,6})[ \t]+(.*)$/);
+    const checkbox = line.match(/^[ \t]*[-*][ \t]+\[([ xX])\][ \t]*(.*)$/);
+    const numbered = line.match(/^\d+[.)][ \t]+(.*)$/);
     const bullet = line.match(/^[ \t]*[-*][ \t]+(.*)$/);
     if (heading) {
-      // The device has one heading level; deeper levels become bold lines.
-      style = heading[1].length === 1 ? ParagraphStyle.HEADING : ParagraphStyle.BOLD;
+    // Three native heading sizes: # -> HEADING, ## -> HEADING2 (extended record),
+    // ### and deeper -> BOLD (bare code 3, smallest).
+    style =
+      heading[1].length === 1 ? ParagraphStyle.HEADING
+      : heading[1].length === 2 ? ParagraphStyle.HEADING2
+      : ParagraphStyle.BOLD;
       rest = heading[2];
+    } else if (checkbox) {
+      style = checkbox[1] === " " ? ParagraphStyle.CHECKBOX : ParagraphStyle.CHECKBOX_CHECKED;
+      rest = checkbox[2];
+    } else if (numbered) {
+      // Device renders its own numbers; strip the literal prefix.
+      style = ParagraphStyle.NUMBERED;
+      rest = numbered[1];
     } else if (bullet && !line.match(/^[ \t]*[-*][ \t]*$/)) {
       style = ParagraphStyle.BULLET;
       rest = bullet[1];
     }
+
     paragraphs.push({ style: style as OutParagraph["style"], spans: inlineToSpans(rest) });
   }
 
@@ -205,14 +219,22 @@ export function deviceToMarkdown(paragraphs: ParsedParagraph[], stash: string[])
       });
 
   const bodyLines: string[] = [];
+  let numCounter = 0;
   for (let i = 0; i < bodyEnd; i++) {
     const l = lines[i];
     let text = takeFootnotes(l.text);
-    if (l.style === ParagraphStyle.HEADING) text = `# ${text}`;
-    else if (l.style === ParagraphStyle.BOLD) text = `## ${text}`;
-    else if (l.style === ParagraphStyle.BULLET || l.style === ParagraphStyle.BULLET2) text = `- ${text}`;
-    else if (l.style === ParagraphStyle.CHECKBOX) text = `- [ ] ${text}`;
-    else if (l.style === ParagraphStyle.CHECKBOX_CHECKED) text = `- [x] ${text}`;
+    if (l.style === ParagraphStyle.NUMBERED) {
+      numCounter += 1;
+      text = `${numCounter}. ${text}`;
+    } else {
+      numCounter = 0;
+      if (l.style === ParagraphStyle.HEADING) text = `# ${text}`;
+      else if (l.style === ParagraphStyle.HEADING2) text = `## ${text}`;
+      else if (l.style === ParagraphStyle.BOLD) text = `### ${text}`;
+      else if (l.style === ParagraphStyle.BULLET || l.style === ParagraphStyle.BULLET2) text = `- ${text}`;
+      else if (l.style === ParagraphStyle.CHECKBOX) text = `- [ ] ${text}`;
+      else if (l.style === ParagraphStyle.CHECKBOX_CHECKED) text = `- [x] ${text}`;
+    }
     bodyLines.push(text);
   }
   while (bodyLines.length && !bodyLines[bodyLines.length - 1].trim()) bodyLines.pop();
