@@ -7,6 +7,16 @@
  * existing pages are never rewritten in place.
  */
 
+export const HEADER_V6 = "reMarkable .lines file, version=6          ";
+
+export const TagType = {
+  ID: 0xf,
+  Length4: 0xc,
+  Byte8: 0x8,
+  Byte4: 0x4,
+  Byte1: 0x1,
+} as const;
+
 export const ParagraphStyle = {
   BASIC: 0,
   PLAIN: 1,
